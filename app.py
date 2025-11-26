@@ -29,21 +29,22 @@ def add_magnet():
     except Exception as e:
         return jsonify({"result": False, "error": str(e)})
 
-# --- 2. LIST FILES (Dynamic Folder ID) ---
+# --- 2. LIST FILES (Fixed Type Conversion) ---
 @app.route('/list-files', methods=['POST'])
 def list_files():
     data = request.json
     token = data.get('token')
-    # If folder_id is not sent, default to "0" (Root Folder)
     folder_id = data.get('folder_id', "0")
     
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
     url = "https://www.seedr.cc/api/folder"
+    
+    # FORCE STRING CONVERSION HERE using str()
     payload = {
         "access_token": token,
-        "folder_id": folder_id
+        "folder_id": str(folder_id) 
     }
     
     try:
