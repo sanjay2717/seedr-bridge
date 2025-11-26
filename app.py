@@ -12,40 +12,36 @@ def add_magnet_to_seedr():
     if not token or not magnet_link:
         return jsonify({"success": False, "error": "Missing token or magnet"}), 400
 
-    # KODI / XBMC API ENDPOINT
-    # This is the special door for Device Tokens
-    url = "https://www.seedr.cc/oauth_test/resource.php"
+    # 1. API Endpoint (The one that gave 200 OK earlier)
+    url = "https://www.seedr.cc/api/folder/magnet/add"
     
-    # KODI PARAMETERS
-    payload = {
-        "access_token": token,        # Token goes in the body, not header
-        "func": "add_torrent",        # The command function
-        "torrent_magnet": magnet_link # The magnet link
-    }
-    
-    # Headers to look like Kodi
+    # 2. Correct Headers
     headers = {
-        "User-Agent": "Seedr Kodi/1.0.3"
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    print(f"Sending command to Kodi endpoint...")
+    # 3. Payload with BOTH possible parameter names (Safety Net)
+    # Seedr sometimes wants 'magnet', sometimes 'torrent_magnet'. We send both.
+    payload = {
+        "magnet": magnet_link,
+        "torrent_magnet": magnet_link,
+        "folder_id": 0
+    }
+
+    print(f"Adding magnet via Standard API...")
     
     try:
+        # Use 'data' to send form-urlencoded (standard for Seedr)
         response = requests.post(url, data=payload, headers=headers)
         
-        # Check if response is empty (happens if token is bad)
-        if not response.text:
-             return jsonify({"success": False, "error": "Empty response from Seedr", "status": response.status_code}), 500
-
-        try:
-            r_json = response.json()
-        except:
-            # If not JSON, return text (e.g. "Error: invalid token")
-            return jsonify({"success": False, "error": "Invalid JSON", "raw": response.text}), 500
-            
+        # 4. Debugging: Print exactly what Seedr said
+        print(f"Seedr Response Code: {response.status_code}")
+        print(f"Seedr Response Body: {response.text}")
+        
         return jsonify({
             "status_code": response.status_code,
-            "seedr_response": r_json
+            "seedr_response": response.json() if response.text else "No content"
         })
         
     except Exception as e:
