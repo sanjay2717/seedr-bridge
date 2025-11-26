@@ -7,7 +7,7 @@ app = Flask(__name__)
 def home():
     return "Seedr Bridge Active"
 
-# --- 1. ADD MAGNET (Uses Kodi Method - PROVEN TO WORK) ---
+# --- 1. ADD MAGNET ---
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     data = request.json
@@ -23,41 +23,33 @@ def add_magnet():
         "func": "add_torrent",
         "torrent_magnet": magnet
     }
-    
     try:
         resp = requests.post(url, data=payload)
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"result": False, "error": str(e)})
 
-# --- 2. LIST FILES (Uses Standard API - BETTER FOR READING) ---
+# --- 2. LIST FILES (Dynamic Folder ID) ---
 @app.route('/list-files', methods=['POST'])
 def list_files():
     data = request.json
     token = data.get('token')
+    # If folder_id is not sent, default to "0" (Root Folder)
+    folder_id = data.get('folder_id', "0")
     
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
-    # We use the main API endpoint, passing token in BODY
     url = "https://www.seedr.cc/api/folder"
     payload = {
         "access_token": token,
-        "folder_id": 0
+        "folder_id": folder_id
     }
     
     try:
-        print(f"Listing files for token {token[:5]}...")
+        print(f"Listing folder {folder_id}...")
         resp = requests.post(url, data=payload)
-        
-        # Check if response is valid JSON
-        try:
-            return jsonify(resp.json())
-        except:
-            # If Seedr sends back HTML error, show it
-            print(f"Non-JSON Response: {resp.text}")
-            return jsonify({"error": "Seedr returned invalid JSON", "raw_response": resp.text}), 500
-            
+        return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
