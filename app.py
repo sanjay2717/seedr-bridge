@@ -12,36 +12,41 @@ def add_magnet_to_seedr():
     if not token or not magnet_link:
         return jsonify({"success": False, "error": "Missing token or magnet"}), 400
 
-    # 1. API Endpoint (The one that gave 200 OK earlier)
+    # API Endpoint
+    # We stick with the one that gave us a 200 OK before
     url = "https://www.seedr.cc/api/folder/magnet/add"
     
-    # 2. Correct Headers
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-
-    # 3. Payload with BOTH possible parameter names (Safety Net)
-    # Seedr sometimes wants 'magnet', sometimes 'torrent_magnet'. We send both.
+    # PAYLOAD
+    # We put the token INSIDE the data, not the header
     payload = {
+        "access_token": token,  # <--- Moved here
         "magnet": magnet_link,
-        "torrent_magnet": magnet_link,
         "folder_id": 0
     }
 
-    print(f"Adding magnet via Standard API...")
+    # HEADERS
+    # We remove the "Authorization" header to avoid confusion
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    print(f"Adding magnet with Token-in-Body method...")
     
     try:
-        # Use 'data' to send form-urlencoded (standard for Seedr)
+        # requests.post with 'data=' automatically formats as form-urlencoded
         response = requests.post(url, data=payload, headers=headers)
         
-        # 4. Debugging: Print exactly what Seedr said
-        print(f"Seedr Response Code: {response.status_code}")
-        print(f"Seedr Response Body: {response.text}")
+        print(f"Seedr Code: {response.status_code}")
         
+        try:
+            r_json = response.json()
+        except:
+            # If they send back HTML or text
+            r_json = response.text
+            
         return jsonify({
             "status_code": response.status_code,
-            "seedr_response": response.json() if response.text else "No content"
+            "seedr_response": r_json
         })
         
     except Exception as e:
