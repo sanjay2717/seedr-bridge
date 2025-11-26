@@ -7,7 +7,7 @@ app = Flask(__name__)
 def home():
     return "Seedr Bridge Active"
 
-# --- 1. ADD MAGNET ---
+# --- 1. ADD MAGNET (Kodi Method) ---
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     data = request.json
@@ -29,26 +29,27 @@ def add_magnet():
     except Exception as e:
         return jsonify({"result": False, "error": str(e)})
 
-# --- 2. LIST FILES (Fixed Type Conversion) ---
+# --- 2. LIST FILES (Kodi Method - FIXED) ---
 @app.route('/list-files', methods=['POST'])
 def list_files():
     data = request.json
     token = data.get('token')
-    folder_id = data.get('folder_id', "0")
+    folder_id = data.get('folder_id', "0") # Default to 0 (Root)
     
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
-    url = "https://www.seedr.cc/api/folder"
+    # SWITCHING TO KODI ENDPOINT
+    url = "https://www.seedr.cc/oauth_test/resource.php"
     
-    # FORCE STRING CONVERSION HERE using str()
     payload = {
         "access_token": token,
-        "folder_id": str(folder_id) 
+        "func": "get_folder",
+        "folder_id": str(folder_id)
     }
     
     try:
-        print(f"Listing folder {folder_id}...")
+        print(f"Listing folder {folder_id} via Kodi Method...")
         resp = requests.post(url, data=payload)
         return jsonify(resp.json())
     except Exception as e:
