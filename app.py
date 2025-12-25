@@ -3,6 +3,13 @@ import requests
 
 app = Flask(__name__)
 
+# --- CONFIGURATION ---
+# We pretend to be the Android App now
+HEADERS = {
+    "User-Agent": "Seedr Android/1.0",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
+
 @app.route('/')
 def home():
     return "Seedr Bridge Active."
@@ -33,7 +40,7 @@ def get_token():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- 1. ADD MAGNET (Working) ---
+# --- 1. ADD MAGNET (Kodi Method - Works) ---
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     data = request.json
@@ -43,7 +50,6 @@ def add_magnet():
     if not token or not magnet:
         return jsonify({"error": "Missing params"}), 400
         
-    # We add ?json=1 to be safe here too
     url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
     payload = {
         "access_token": token,
@@ -56,7 +62,7 @@ def add_magnet():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# --- 2. LIST FILES (Kodi Method with JSON Fix) ---
+# --- 2. LIST FILES (Android Method - URL Path) ---
 @app.route('/list-files', methods=['POST'])
 def list_files():
     data = request.json
@@ -66,28 +72,22 @@ def list_files():
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
-    # CRITICAL FIX: ?json=1 tells Seedr to send JSON, not XML/Text
-    url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
+    # STRATEGY: Put ID inside the URL
+    # Format: https://www.seedr.cc/api/folder/12345
+    if str(folder_id) == "0":
+        url = "https://www.seedr.cc/api/folder"
+    else:
+        url = f"https://www.seedr.cc/api/folder/{folder_id}"
     
-    payload = {
-        "access_token": token,
-        "func": "get_folder",
-        "folder_id": str(folder_id)
+    # Authenticate via Query Param
+    params = {
+        "access_token": token
     }
     
     try:
-        print(f"Kodi Method: Opening folder {folder_id}...")
-        resp = requests.post(url, data=payload)
-        
-        # Check raw response if it fails
-        if not resp.text:
-            return jsonify({"error": "Empty response from Seedr"}), 500
-
-        try:
-            return jsonify(resp.json())
-        except:
-            return jsonify({"error": "Invalid JSON", "raw": resp.text}), 500
-            
+        print(f"Android Method: Opening {url}...")
+        resp = requests.get(url, params=params, headers=HEADERS)
+        return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
