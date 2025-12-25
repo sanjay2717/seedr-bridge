@@ -3,16 +3,6 @@ import requests
 
 app = Flask(__name__)
 
-# --- CONFIGURATION ---
-# We use a standard Browser User-Agent for the API to avoid "Bot" detection
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-@app.route('/')
-def home():
-    return "Seedr Bridge Active."
-
 # --- AUTH ENDPOINTS ---
 @app.route('/auth/code', methods=['GET'])
 def get_code():
@@ -39,7 +29,7 @@ def get_token():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- 1. ADD MAGNET (Kodi Method - Proven to work) ---
+# --- 1. ADD MAGNET (Keep this, it works) ---
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     data = request.json
@@ -61,7 +51,7 @@ def add_magnet():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# --- 2. LIST FILES (The Brute Force Fix) ---
+# --- 2. LIST FILES (Double-Tap Method) ---
 @app.route('/list-files', methods=['POST'])
 def list_files():
     data = request.json
@@ -71,20 +61,37 @@ def list_files():
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
-    url = "https://www.seedr.cc/api/folder"
+    # The Endpoint from your notes
+    url = f"https://www.seedr.cc/fs/folder/{folder_id}/items"
     
-    # We send ALL possible parameter names to force it to open the folder
-    params = {
-        "access_token": token,
-        "folder_id": str(folder_id),  # Standard
-        "id": str(folder_id),         # Alternative
-        "folder": str(folder_id)      # Rare variant
+    print(f"--- Attempting to open folder {folder_id} ---")
+
+    # ATTEMPT 1: Bearer Token in Header (Standard)
+    headers = {
+        "User-Agent": "Seedr Kodi/1.0.3",
+        "Authorization": f"Bearer {token}"
     }
-    
     try:
-        print(f"Brute forcing folder {folder_id}...")
-        # Use GET request with browser headers
-        resp = requests.get(url, params=params, headers=HEADERS)
+        print("Trying Bearer Header...")
+        resp = requests.get(url, headers=headers)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+        print(f"Bearer failed with {resp.status_code}")
+    except:
+        pass
+
+    # ATTEMPT 2: Token in Query Param (Alternative)
+    # Some device tokens ONLY work this way
+    params = {
+        "access_token": token
+    }
+    # Clear authorization header for this attempt so it doesn't conflict
+    headers_simple = {
+        "User-Agent": "Seedr Kodi/1.0.3"
+    }
+    try:
+        print("Trying Query Param...")
+        resp = requests.get(url, params=params, headers=headers_simple)
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
