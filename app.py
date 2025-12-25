@@ -3,24 +3,45 @@ import requests
 
 app = Flask(__name__)
 
-# --- AUTH ENDPOINTS (Keep these for generating tokens) ---
-@app.route('/auth/code', methods=['GET'])
-def get_code():
-    # ... (Keep existing logic or simplify)
-    return jsonify({"message": "Use /auth/token with device_code"})
-
-@app.route('/auth/token', methods=['GET'])
-def get_token():
-    # ... (Keep existing logic)
-    return jsonify({"message": "Token generator"})
-
-# --- MAIN BRIDGE ---
+# --- CONFIGURATION ---
+# Headers for Listing Files (Official API style)
+API_HEADERS = {
+    "User-Agent": "Seedr Kodi/1.0.3",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
 
 @app.route('/')
 def home():
     return "Seedr Bridge Active."
 
-# --- 1. ADD MAGNET (Updated to match your notes) ---
+# --- AUTH ENDPOINTS (Keep these) ---
+@app.route('/auth/code', methods=['GET'])
+def get_code():
+    url = "https://www.seedr.cc/oauth_device/create"
+    params = {"client_id": "seedr_xbmc"}
+    try:
+        resp = requests.get(url, params=params)
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/auth/token', methods=['GET'])
+def get_token():
+    device_code = request.args.get('device_code')
+    url = "https://www.seedr.cc/oauth_device/token"
+    params = {
+        "client_id": "seedr_xbmc",
+        "grant_type": "device_token",
+        "device_code": device_code
+    }
+    try:
+        resp = requests.get(url, params=params)
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- 1. ADD MAGNET (REVERTED TO KODI METHOD) ---
+# This matches the setup that gave us the "Victory" earlier.
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     data = request.json
@@ -30,29 +51,25 @@ def add_magnet():
     if not token or not magnet:
         return jsonify({"error": "Missing params"}), 400
         
-    # URL from your notes
-    url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
+    # The "Kodi" Endpoint (Proven to work for adding)
+    url = "https://www.seedr.cc/oauth_test/resource.php"
     
-    # HEADERS: authorization is Key!
-    headers = {
-        "User-Agent": "Seedr Kodi/1.0.3",
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    
-    # BODY: action=add_magnet
+    # Token goes in BODY, not Header
     payload = {
-        "action": "add_magnet",
-        "magnet": magnet
+        "access_token": token,
+        "func": "add_torrent",
+        "torrent_magnet": magnet
     }
     
     try:
-        resp = requests.post(url, data=payload, headers=headers)
+        # No special headers needed here, just the payload
+        resp = requests.post(url, data=payload)
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# --- 2. LIST FILES (Updated to match your notes) ---
+# --- 2. LIST FILES (NEW API METHOD) ---
+# This uses the endpoint from your notes which works for listing.
 @app.route('/list-files', methods=['POST'])
 def list_files():
     data = request.json
@@ -62,19 +79,17 @@ def list_files():
     if not token:
         return jsonify({"error": "Missing token"}), 400
 
-    # URL from your notes: /fs/folder/{id}/items
+    # The FS Endpoint (Best for listing)
     url = f"https://www.seedr.cc/fs/folder/{folder_id}/items"
     
-    # HEADERS: This is the magic part
+    # Token goes in HEADER here (Bearer style)
     headers = {
-        "User-Agent": "Seedr Kodi/1.0.3",
         "Authorization": f"Bearer {token}"
     }
     
     try:
-        print(f"Listing folder {folder_id} with Bearer Header...")
+        # Use GET for listing
         resp = requests.get(url, headers=headers)
-        
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
