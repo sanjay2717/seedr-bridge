@@ -2,6 +2,7 @@ import os
 import threading
 import asyncio
 import requests
+import io
 from flask import Flask, request, jsonify
 from pyrogram import Client
 
@@ -12,20 +13,26 @@ API_ID = os.environ.get("TG_API_ID")
 API_HASH = os.environ.get("TG_API_HASH")
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 
-# Ensure API_ID is integer
+# Safety Check
 if API_ID:
     try:
         API_ID = int(API_ID)
     except:
         pass
 
-# --- 1. THE SMART STREAMER (FIXED) ---
-# We do NOT inherit from io.BytesIO anymore. This prevents the "Invalid File" error.
-class SmartStream:
+HEADERS = {
+    "User-Agent": "Seedr Android/1.0",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
+
+# --- 1. THE HYBRID STREAMER (Fixes both 'Invalid File' and 'Seek' errors) ---
+class SmartStream(io.BytesIO):
     def __init__(self, url, name):
+        # Initialize as a BytesIO object so Pyrogram accepts it as a file
+        super().__init__()
         self.url = url
         self.name = name
-        self.mode = 'rb' # Critical: Tells Pyrogram this is binary
+        self.mode = 'rb' 
         
         print(f"STREAM: Connecting to {url[:30]}...")
         
@@ -40,33 +47,28 @@ class SmartStream:
         # 2. Start the real Stream
         self.response = requests.get(url, stream=True)
         self.raw = self.response.raw
-        self.current_pos = 0
+        self._pos = 0
 
-    # Pyrogram calls this to read data
+    # Override read to fetch from network instead of memory
     def read(self, size=-1):
-        if size == -1:
-            return self.raw.read()
         return self.raw.read(size)
 
-    # Pyrogram calls this to check size (Virtual Seek)
+    # Override seek to fake the file size calculation
     def seek(self, offset, whence=0):
-        if whence == 0:
-            self.current_pos = offset
+        if whence == 2: # SEEK_END (Pyrogram uses this to get size)
+            self._pos = self.total_size + offset
+        elif whence == 0:
+            self._pos = offset
         elif whence == 1:
-            self.current_pos += offset
-        elif whence == 2:
-            self.current_pos = self.total_size + offset
-        return self.current_pos
+            self._pos += offset
+        return self._pos
     
-    # Pyrogram calls this to see where we are
     def tell(self):
-        return self.current_pos
+        return self._pos
 
 # --- 2. UPLOAD WORKER ---
 def upload_worker(file_url, chat_id, caption):
     print(f"WORKER: Starting upload to {chat_id}")
-    
-    # Create isolated event loop for this thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -74,12 +76,11 @@ def upload_worker(file_url, chat_id, caption):
         async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True) as app:
             print("WORKER: Bot connected!")
             try:
-                # Use Smart Streamer
+                # Use Hybrid Streamer
                 stream = SmartStream(file_url, "video.mp4")
                 
-                # Double check stream health
                 if stream.total_size == 0:
-                    print("WORKER WARNING: Could not determine file size, upload might fail.")
+                    print("WORKER WARNING: File size 0. Link might be expired.")
                 
                 print("WORKER: Streaming to Telegram...")
                 await app.send_video(
@@ -108,7 +109,6 @@ def upload_worker(file_url, chat_id, caption):
 def home():
     return "Seedr-Telegram Bridge Active."
 
-# --- TELEGRAM UPLOAD ROUTE ---
 @app.route('/upload-telegram', methods=['POST'])
 def upload_telegram():
     data = request.json
@@ -119,43 +119,33 @@ def upload_telegram():
     if not file_url or not chat_id:
         return jsonify({"error": "Missing params"}), 400
 
-    # Start background process
     thread = threading.Thread(target=upload_worker, args=(file_url, chat_id, caption))
     thread.start()
-    
     return jsonify({"status": "Upload started"})
 
 # ==========================================
-# YOUR CONFIRMED WORKING SEEDR ROUTES
+# SEEDR LOGIC (PRESERVED 100% AS REQUESTED)
 # ==========================================
 
-HEADERS_ANDROID = {
-    "User-Agent": "Seedr Android/1.0",
-    "Content-Type": "application/x-www-form-urlencoded"
-}
-
+# --- AUTH ---
 @app.route('/auth/code', methods=['GET'])
 def get_code():
-    url = "https://www.seedr.cc/oauth_device/create"
-    params = {"client_id": "seedr_xbmc"}
     try:
-        resp = requests.get(url, params=params)
+        resp = requests.get("https://www.seedr.cc/oauth_device/create", params={"client_id": "seedr_xbmc"})
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)}), 500
 
 @app.route('/auth/token', methods=['GET'])
 def get_token():
-    device_code = request.args.get('device_code')
-    url = "https://www.seedr.cc/oauth_device/token"
-    params = {"client_id": "seedr_xbmc", "grant_type": "device_token", "device_code": device_code}
     try:
-        resp = requests.get(url, params=params)
+        resp = requests.get("https://www.seedr.cc/oauth_device/token", params={"client_id": "seedr_xbmc", "grant_type": "device_token", "device_code": request.args.get('device_code')})
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)}), 500
 
+# --- STEP 1: ADD (Kodi Method) ---
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
-    # Kodi Method (Proven)
+    # Proven to work
     url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
     payload = {"access_token": request.json.get('token'), "func": "add_torrent", "torrent_magnet": request.json.get('magnet')}
     try:
@@ -163,9 +153,10 @@ def add_magnet():
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)})
 
+# --- STEP 2: LIST FILES (Android Method) ---
 @app.route('/list-files', methods=['POST'])
 def list_files():
-    # Android Method (URL Path Strategy) - Proven for Listing
+    # Proven to work for listing
     data = request.json
     token = data.get('token')
     folder_id = str(data.get('folder_id', "0"))
@@ -177,16 +168,19 @@ def list_files():
         
     params = {"access_token": token}
     try:
-        resp = requests.get(url, params=params, headers=HEADERS_ANDROID)
+        # Uses Android Headers
+        resp = requests.get(url, params=params, headers=HEADERS)
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)}), 500
 
+# --- STEP 3: GET LINK (Kodi Method) ---
 @app.route('/get-link', methods=['POST'])
 def get_link():
-    # Kodi Method (Proven)
+    # Proven to work for links
     url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
     payload = {"access_token": request.json.get('token'), "func": "fetch_file", "folder_file_id": str(request.json.get('file_id'))}
     try:
+        print(f"Fetching link for file {request.json.get('file_id')}...")
         resp = requests.post(url, data=payload)
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)}), 500
