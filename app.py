@@ -8,7 +8,7 @@ import time
 from io import IOBase
 from flask import Flask, request, jsonify
 from pyrogram import Client
-from pyrogram.errors import UserAlreadyParticipant, FloodWait, ChannelPrivate, ChatAdminRequired
+from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 
 app = Flask(__name__)
 
@@ -79,13 +79,13 @@ class SmartStream(IOBase):
     def fileno(self): 
         return None
 
-# --- 2. ASYNC UPLOAD LOGIC ---
+# --- 2. ASYNC UPLOAD LOGIC (PUBLIC CHANNEL OPTIMIZED) ---
 async def perform_upload(file_url, chat_target, caption, filename):
     """
-    Smart Upload Strategy:
-    - Invite links (https://t.me/+...) for private channels
-    - Usernames (@channel) for public channels
-    - Numeric IDs as fallback
+    Optimized for PUBLIC channels with username
+    - Accepts @username (recommended for public channels)
+    - Accepts numeric ID as fallback
+    - NO invite link support (causes BOT_METHOD_INVALID)
     """
     async with Client(
         "bot_session", 
@@ -99,80 +99,41 @@ async def perform_upload(file_url, chat_target, caption, filename):
         final_chat_id = None
         chat_str = str(chat_target).strip()
         
-        # --- STRATEGY 1: INVITE LINK (PRIVATE CHANNELS) ---
-        if "t.me/+" in chat_str or "joinchat" in chat_str:
-            print(f"WORKER: Invite link detected", flush=True)
-            
-            # Extract hash from link
-            if "t.me/+" in chat_str:
-                invite_hash = chat_str.split("t.me/+")[1].split("?")[0].split("/")[0]
-            elif "joinchat/" in chat_str:
-                invite_hash = chat_str.split("joinchat/")[1].split("?")[0].split("/")[0]
-            
-            print(f"WORKER: Extracted hash: {invite_hash[:10]}...", flush=True)
-            
-            # Use join_chat to refresh access
-            try:
-                chat = await app.join_chat(chat_str)
-                final_chat_id = chat.id
-                print(f"WORKER: ✅ Joined/Refreshed → ID: {final_chat_id}", flush=True)
-                
-            except UserAlreadyParticipant:
-                print("WORKER: Already in channel, fetching ID...", flush=True)
-                try:
-                    async for msg in app.get_chat_history(chat_str, limit=1):
-                        final_chat_id = msg.chat.id
-                        print(f"WORKER: ✅ Got ID from message: {final_chat_id}", flush=True)
-                        break
-                except Exception as e2:
-                    print(f"WORKER WARNING: {e2}", flush=True)
-                    try:
-                        chat = await app.get_chat(chat_str)
-                        final_chat_id = chat.id
-                        print(f"WORKER: ✅ Got ID from get_chat: {final_chat_id}", flush=True)
-                    except Exception as e3:
-                        raise Exception(f"Cannot resolve invite link: {e3}")
-                
-            except FloodWait as e:
-                print(f"WORKER: FloodWait {e.value}s, waiting...", flush=True)
-                await asyncio.sleep(e.value)
-                chat = await app.join_chat(chat_str)
-                final_chat_id = chat.id
-                
-            except Exception as e:
-                raise Exception(f"Invite link failed: {e}")
-        
-        # --- STRATEGY 2: PUBLIC USERNAME ---
-        elif chat_str.startswith("@"):
+        # --- STRATEGY 1: PUBLIC USERNAME (RECOMMENDED) ---
+        if chat_str.startswith("@"):
             print(f"WORKER: Public username: {chat_str}", flush=True)
             try:
                 chat = await app.get_chat(chat_str)
                 final_chat_id = chat.id
                 print(f"WORKER: ✅ Resolved to ID: {final_chat_id}", flush=True)
             except Exception as e:
-                raise Exception(f"Username failed: {e}")
+                raise Exception(f"Username resolution failed: {e}")
         
-        # --- STRATEGY 3: NUMERIC ID (FALLBACK) ---
+        # --- STRATEGY 2: NUMERIC ID (FALLBACK) ---
         elif chat_str.lstrip("-").isdigit():
             final_chat_id = int(chat_str)
             print(f"WORKER: Using numeric ID: {final_chat_id}", flush=True)
             
-            # Try to refresh access hash
+            # Try to verify access
             try:
-                print("WORKER: Refreshing access hash...", flush=True)
-                async for msg in app.get_chat_history(final_chat_id, limit=1):
-                    print(f"WORKER: ✅ Access refreshed via message {msg.id}", flush=True)
-                    break
+                print("WORKER: Verifying access...", flush=True)
+                chat_info = await app.get_chat(final_chat_id)
+                print(f"WORKER: ✅ Verified: {chat_info.title}", flush=True)
+            except ChannelPrivate:
+                raise Exception("Channel is private and bot has no access. Add bot as admin first.")
             except Exception as e:
-                print(f"WORKER: ⚠️ Could not refresh: {e}", flush=True)
-                try:
-                    chat_info = await app.get_chat(final_chat_id)
-                    print(f"WORKER: ✅ Verified: {chat_info.title}", flush=True)
-                except Exception as e2:
-                    print(f"WORKER: ⚠️ Verification failed: {e2}", flush=True)
+                print(f"WORKER: ⚠️ Verification failed: {e}", flush=True)
+                raise Exception(f"Cannot access channel: {e}")
+        
+        # --- REJECT INVITE LINKS ---
+        elif "t.me/+" in chat_str or "joinchat" in chat_str:
+            raise Exception(
+                "Bots cannot join channels via invite links. "
+                "Please use @username for public channels or add bot as admin and use numeric ID for private channels."
+            )
         
         else:
-            raise Exception(f"Invalid format: {chat_str}")
+            raise Exception(f"Invalid chat format: {chat_str}. Use @username or numeric ID.")
         
         if not final_chat_id:
             raise Exception("Could not resolve chat ID")
@@ -287,7 +248,7 @@ def upload_telegram():
     Upload video to Telegram
     Body: {
         "url": "https://...",
-        "chat_id": "https://t.me/+... OR @username OR -100...",
+        "chat_id": "@username OR -100...",
         "caption": "Title (1080p)",
         "filename": "movie.mp4"
     }
