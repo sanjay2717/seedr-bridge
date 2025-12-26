@@ -30,8 +30,9 @@ HEADERS_STREAM = {
 # --- QUEUE SYSTEM ---
 JOB_QUEUE = queue.Queue()
 JOBS = {} 
+WORKER_THREAD = None # Keep track of the thread
 
-# --- 1. SMART STREAMER (WORKING) ---
+# --- 1. SMART STREAMER ---
 class SmartStream(IOBase):
     def __init__(self, url, name):
         super().__init__()
@@ -78,21 +79,25 @@ def worker_loop():
     asyncio.set_event_loop(loop)
     
     while True:
-        job_id, data = JOB_QUEUE.get()
-        print(f"WORKER: Processing Job {job_id}")
-        JOBS[job_id]['status'] = 'processing'
-        
         try:
+            # Wait for a job (blocking)
+            job_id, data = JOB_QUEUE.get()
+            print(f"WORKER: Processing Job {job_id}")
+            JOBS[job_id]['status'] = 'processing'
+            
             # Run upload
             result = loop.run_until_complete(perform_upload(data))
             JOBS[job_id]['status'] = 'done'
             JOBS[job_id]['result'] = result
+            
         except Exception as e:
             print(f"WORKER ERROR: {e}")
-            JOBS[job_id]['status'] = 'failed'
-            JOBS[job_id]['error'] = str(e)
-        
-        JOB_QUEUE.task_done()
+            if 'job_id' in locals():
+                JOBS[job_id]['status'] = 'failed'
+                JOBS[job_id]['error'] = str(e)
+        finally:
+            if 'job_id' in locals():
+                JOB_QUEUE.task_done()
 
 async def perform_upload(data):
     file_url = data['url']
@@ -113,7 +118,7 @@ async def perform_upload(data):
             chat = await app.get_chat(target)
             target = chat.id
         except:
-            pass # Try anyway
+            print("WORKER: Could not resolve peer, trying blind upload...")
 
         # Upload
         with SmartStream(file_url, filename) as stream:
@@ -133,32 +138,46 @@ async def perform_upload(data):
             return {
                 "message_id": msg.id,
                 "chat_id": msg.chat.id,
-                "file_id": msg.video.file_id,
                 "link": f"https://t.me/c/{str(msg.chat.id).replace('-100', '')}/{msg.id}"
             }
 
-# Start Worker
-threading.Thread(target=worker_loop, daemon=True).start()
+# --- HELPER: WAKE UP WORKER ---
+def ensure_worker_alive():
+    global WORKER_THREAD
+    if WORKER_THREAD is None or not WORKER_THREAD.is_alive():
+        print("SYSTEM: Restarting Zombie Thread...")
+        WORKER_THREAD = threading.Thread(target=worker_loop, daemon=True)
+        WORKER_THREAD.start()
 
 # --- ROUTES ---
 
 @app.route('/')
-def home(): return f"Queue Active. Jobs: {JOB_QUEUE.qsize()}"
+def home(): 
+    ensure_worker_alive()
+    return f"Queue Active. Jobs: {JOB_QUEUE.qsize()}"
 
 @app.route('/upload-telegram', methods=['POST'])
 def upload_telegram():
     data = request.json
     if not data.get('url') or not data.get('chat_id'):
         return jsonify({"error": "Missing params"}), 400
-        
+    
+    # 1. Wake up the worker if it died
+    ensure_worker_alive()
+    
+    # 2. Add job
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {'status': 'queued', 'submitted_at': time.time()}
     JOB_QUEUE.put((job_id, data))
     
+    print(f"API: Added Job {job_id} to queue")
     return jsonify({"job_id": job_id, "status": "queued"})
 
 @app.route('/job-status/<job_id>', methods=['GET'])
 def job_status(job_id):
+    # Wake up worker just in case
+    ensure_worker_alive()
+    
     job = JOBS.get(job_id)
     if not job: return jsonify({"status": "not_found"}), 404
     return jsonify(job)
@@ -205,4 +224,6 @@ def get_link():
     except Exception as e: return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    # Start initial worker
+    ensure_worker_alive()
     app.run(host='0.0.0.0', port=10000)
