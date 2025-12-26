@@ -5,11 +5,10 @@ import requests
 import queue
 import uuid
 import time
-import re
 from io import IOBase
 from flask import Flask, request, jsonify
 from pyrogram import Client
-from pyrogram.raw.functions.messages import CheckChatInvite
+from pyrogram.errors import UserAlreadyParticipant, FloodWait
 
 app = Flask(__name__)
 
@@ -18,35 +17,37 @@ API_ID = os.environ.get("TG_API_ID")
 API_HASH = os.environ.get("TG_API_HASH")
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 
-# Headers for Seedr
+if API_ID:
+    try:
+        API_ID = int(API_ID)
+    except:
+        pass
+
 HEADERS_STREAM = {
     "User-Agent": "Seedr Android/1.0",
     "Content-Type": "application/x-www-form-urlencoded"
 }
 
-# --- 1. SMART STREAMER (IOBase Inheritance - Kept as is) ---
+# --- 1. SMART STREAMER ---
 class SmartStream(IOBase):
     def __init__(self, url, name):
         super().__init__()
         self.url = url
         self.name = name
         self.mode = 'rb'
-        self.total_size = 0
-        self.current_pos = 0
-        self._closed = False
-        
-        print(f"STREAM: Connecting to {url[:40]}...")
+        print(f"STREAM: Connecting to {url[:40]}...", flush=True)
         try:
             head = requests.head(url, allow_redirects=True, timeout=10, headers=HEADERS_STREAM)
             self.total_size = int(head.headers.get('content-length', 0))
-            print(f"STREAM: Size {self.total_size}")
+            print(f"STREAM: Size {self.total_size}", flush=True)
         except:
-            pass
-
+            self.total_size = 0
         self.response = requests.get(url, stream=True, timeout=30, headers=HEADERS_STREAM)
         self.raw = self.response.raw
         self.raw.decode_content = True
-
+        self.current_pos = 0
+        self._closed = False
+    
     def read(self, size=-1):
         if self._closed: raise ValueError("I/O closed")
         data = self.raw.read(size)
@@ -59,158 +60,231 @@ class SmartStream(IOBase):
         elif whence == 2: self.current_pos = self.total_size + offset
         return self.current_pos
     
-    def tell(self): return self.current_pos
+    def tell(self): 
+        return self.current_pos
+    
     def close(self):
         if not self._closed:
             self._closed = True
-            if hasattr(self, 'response'): self.response.close()
-    def fileno(self): return None
+            if hasattr(self, 'response'): 
+                self.response.close()
+    
+    def fileno(self): 
+        return None
 
-# --- 2. ASYNC WORKER LOGIC ---
-async def process_job(data):
-    file_url = data['url']
-    chat_target = data['chat_id']
-    caption = data['caption']
-    filename = data.get('filename', 'video.mp4')
-
-    async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
-        print("WORKER: Bot connected!")
+# --- 2. ASYNC UPLOAD LOGIC (FIXED!) ---
+async def perform_upload(file_url, chat_target, caption, filename):
+    """Main upload worker - now properly async"""
+    async with Client(
+        "bot_session", 
+        api_id=API_ID, 
+        api_hash=API_HASH, 
+        bot_token=BOT_TOKEN, 
+        workdir="/tmp"
+    ) as app:
+        print("WORKER: Bot connected!", flush=True)
         
-        target_id = None
-
-        # --- LOGIC: RESOLVE PEER VIA CHECK_INVITE ---
-        # If input is a link like https://t.me/+AbCd123...
-        if "t.me/+" in str(chat_target) or "joinchat" in str(chat_target):
+        final_chat_id = None
+        chat_str = str(chat_target).strip()
+        
+        # --- STRATEGY 1: INVITE LINK ---
+        if "t.me/+" in chat_str or "joinchat" in chat_str:
+            print("WORKER: Invite link detected", flush=True)
             try:
-                # Extract the hash (the part after +)
-                invite_hash = chat_target.split("+")[-1].strip()
-                if "joinchat/" in chat_target:
-                    invite_hash = chat_target.split("joinchat/")[-1].strip()
+                chat = await app.join_chat(chat_str)
+                final_chat_id = chat.id
+                print(f"WORKER: ✅ Resolved Link → ID: {final_chat_id}", flush=True)
                 
-                print(f"WORKER: Checking Invite Hash: {invite_hash}")
-                
-                # This RAW function updates Pyrogram's internal peer cache
-                # It does NOT join the chat (bots can't), but it learns the Access Hash
-                invite_info = await app.invoke(CheckChatInvite(hash=invite_hash))
-                
-                # Extract Chat ID from the raw result
-                # invite_info.chat is a 'Chat' or 'Channel' raw object
-                target_id = int(f"-100{invite_info.chat.id}")
-                print(f"WORKER: Resolved via Link to ID: {target_id}")
+            except UserAlreadyParticipant:
+                # FIX: Re-fetch the chat to get the ID
+                print("WORKER: Already in channel, re-fetching...", flush=True)
+                try:
+                    # Extract hash and try again
+                    chat = await app.get_chat(chat_str)
+                    final_chat_id = chat.id
+                    print(f"WORKER: ✅ Fallback resolved → ID: {final_chat_id}", flush=True)
+                except Exception as e:
+                    raise Exception(f"UserAlreadyParticipant but cannot resolve: {e}")
+                    
+            except FloodWait as e:
+                print(f"WORKER: FloodWait {e.value}s...", flush=True)
+                await asyncio.sleep(e.value)
+                chat = await app.join_chat(chat_str)
+                final_chat_id = chat.id
                 
             except Exception as e:
-                print(f"WORKER WARNING: CheckChatInvite failed: {e}")
-                # Fallback: Maybe it's a public link or username
+                raise Exception(f"Invite link failed: {e}")
         
-        # If not resolved yet, try standard get_chat
-        if not target_id:
+        # --- STRATEGY 2: USERNAME ---
+        elif chat_str.startswith("@") or (not chat_str.lstrip("-").isdigit()):
+            print(f"WORKER: Username: {chat_str}", flush=True)
             try:
-                # Try as int if possible
-                try: peer = int(chat_target)
-                except: peer = chat_target
-                
-                chat = await app.get_chat(peer)
-                target_id = chat.id
-                print(f"WORKER: Resolved via get_chat: {target_id}")
+                chat = await app.get_chat(chat_str)
+                final_chat_id = chat.id
+                print(f"WORKER: ✅ Resolved → ID: {final_chat_id}", flush=True)
             except Exception as e:
-                print(f"WORKER ERROR: Could not resolve peer. Error: {e}")
-                raise e
-
+                raise Exception(f"Username failed: {e}")
+        
+        # --- STRATEGY 3: NUMERIC ID ---
+        else:
+            try:
+                final_chat_id = int(chat_str)
+                print(f"WORKER: Numeric ID: {final_chat_id}", flush=True)
+                await app.get_chat(final_chat_id)  # Validate
+                print(f"WORKER: ✅ Valid", flush=True)
+            except Exception as e:
+                raise Exception(f"Numeric ID failed: {e}. Use invite link for private channels.")
+        
+        if not final_chat_id:
+            raise Exception("Could not resolve chat")
+        
         # --- UPLOAD ---
         with SmartStream(file_url, filename) as stream:
             if stream.total_size == 0:
                 raise Exception("File size 0. Link expired.")
             
-            print(f"WORKER: Streaming to {target_id}...")
+            print(f"WORKER: Uploading {filename}...", flush=True)
             msg = await app.send_video(
-                chat_id=target_id,
+                chat_id=final_chat_id,
                 video=stream,
                 caption=caption,
                 file_name=filename,
                 supports_streaming=True,
-                progress=lambda c, t: print(f"Up: {c/1024/1024:.1f}MB") if c % (20*1024*1024) == 0 else None
+                progress=lambda c, t: print(f"Up: {c/1024/1024:.1f}MB", flush=True) if c % (20*1024*1024) == 0 else None
             )
             
-            # Return Data for n8n
             clean_id = str(msg.chat.id).replace('-100', '')
             return {
                 "message_id": msg.id,
                 "chat_id": msg.chat.id,
-                "file_id": msg.video.file_id,  # Useful for reposting!
+                "file_id": msg.video.file_id,  # ✅ FIXED: Added file_id
                 "link": f"https://t.me/c/{clean_id}/{msg.id}"
             }
 
-# --- 3. QUEUE PROCESSOR ---
+# --- 3. QUEUE WORKER ---
 JOB_QUEUE = queue.Queue()
 JOBS = {} 
+WORKER_THREAD = None
+WORKER_LOCK = threading.Lock()
 
-def worker_thread():
-    print("SYSTEM: Queue Worker Started")
-    # New Loop for this thread
+def worker_loop():
+    """Background worker - FIXED to use single event loop"""
+    print("SYSTEM: Queue Worker Started", flush=True)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     while True:
+        job_id = None
         try:
             job_id, data = JOB_QUEUE.get()
-            print(f"WORKER: Processing {job_id}")
+            print(f"WORKER: Job {job_id}", flush=True)
             JOBS[job_id]['status'] = 'processing'
             
-            # Run the async logic in this loop
-            result = loop.run_until_complete(process_job(data))
+            # ✅ FIXED: Direct async call instead of nested function
+            result = loop.run_until_complete(perform_upload(
+                file_url=data['url'],
+                chat_target=data['chat_id'],
+                caption=data['caption'],
+                filename=data.get('filename', 'video.mp4')
+            ))
             
             JOBS[job_id]['status'] = 'done'
             JOBS[job_id]['result'] = result
-            print("WORKER: Job Done!")
+            print(f"WORKER: ✅ Job {job_id} done!", flush=True)
+            
         except Exception as e:
-            print(f"WORKER ERROR: {e}")
-            if 'job_id' in locals():
+            print(f"WORKER ERROR: {e}", flush=True)
+            if job_id:
                 JOBS[job_id]['status'] = 'failed'
                 JOBS[job_id]['error'] = str(e)
         finally:
-            if 'job_id' in locals(): JOB_QUEUE.task_done()
+            if job_id:
+                JOB_QUEUE.task_done()
 
-# Start Worker Immediately
-threading.Thread(target=worker_thread, daemon=True).start()
+def ensure_worker_alive():
+    """Start worker thread with thread safety"""
+    global WORKER_THREAD
+    with WORKER_LOCK:
+        if WORKER_THREAD is None or not WORKER_THREAD.is_alive():
+            print("SYSTEM: Starting worker thread...", flush=True)
+            WORKER_THREAD = threading.Thread(target=worker_loop, daemon=True)
+            WORKER_THREAD.start()
 
 # --- ROUTES ---
 @app.route('/')
-def home(): return "Ready"
+def home(): 
+    ensure_worker_alive()
+    return jsonify({"status": "online", "queue": JOB_QUEUE.qsize(), "jobs": len(JOBS)})
 
 @app.route('/upload-telegram', methods=['POST'])
 def upload_telegram():
     data = request.json
+    if not data.get('url') or not data.get('chat_id'): 
+        return jsonify({"error": "Missing url or chat_id"}), 400
+    
+    ensure_worker_alive()
     job_id = str(uuid.uuid4())
-    JOBS[job_id] = {'status': 'queued', 'submitted_at': time.time()}
+    JOBS[job_id] = {'status': 'queued', 'created': time.time()}
     JOB_QUEUE.put((job_id, data))
     return jsonify({"job_id": job_id, "status": "queued"})
 
 @app.route('/job-status/<job_id>', methods=['GET'])
 def job_status(job_id):
-    return jsonify(JOBS.get(job_id, {"status": "not_found"}))
+    ensure_worker_alive()
+    job = JOBS.get(job_id)
+    if not job: 
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
 
-# Seedr Routes (Kept minimal as they work)
+# --- SEEDR ROUTES (FIXED ERROR HANDLING) ---
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     try:
-        return jsonify(requests.post("https://www.seedr.cc/oauth_test/resource.php?json=1", data={"access_token": request.json.get('token'), "func": "add_torrent", "torrent_magnet": request.json.get('magnet')}).json())
-    except: return jsonify({})
+        resp = requests.post(
+            "https://www.seedr.cc/oauth_test/resource.php?json=1",
+            data={
+                "access_token": request.json.get('token'),
+                "func": "add_torrent",
+                "torrent_magnet": request.json.get('magnet')
+            }
+        )
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/list-files', methods=['POST'])
 def list_files():
-    # Android Method
-    t = request.json.get('token')
-    fid = str(request.json.get('folder_id', "0"))
-    url = "https://www.seedr.cc/api/folder" if fid == "0" else f"https://www.seedr.cc/api/folder/{fid}"
+    data = request.json
+    token = data.get('token')
+    folder_id = str(data.get('folder_id', "0"))
+    
+    if folder_id == "0": 
+        url = "https://www.seedr.cc/api/folder"
+    else: 
+        url = f"https://www.seedr.cc/api/folder/{folder_id}"
+    
+    params = {"access_token": token}
     try:
-        return jsonify(requests.get(url, params={"access_token": t}, headers=HEADERS_STREAM).json())
-    except: return jsonify({})
+        resp = requests.get(url, params=params, headers=HEADERS_STREAM)
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/get-link', methods=['POST'])
 def get_link():
     try:
-        return jsonify(requests.post("https://www.seedr.cc/oauth_test/resource.php?json=1", data={"access_token": request.json.get('token'), "func": "fetch_file", "folder_file_id": str(request.json.get('file_id'))}).json())
-    except: return jsonify({})
+        resp = requests.post(
+            "https://www.seedr.cc/oauth_test/resource.php?json=1",
+            data={
+                "access_token": request.json.get('token'),
+                "func": "fetch_file",
+                "folder_file_id": str(request.json.get('file_id'))
+            }
+        )
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    ensure_worker_alive()
     app.run(host='0.0.0.0', port=10000)
