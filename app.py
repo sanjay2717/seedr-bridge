@@ -64,105 +64,108 @@ class SmartStream(IOBase):
             if hasattr(self, 'response'): self.response.close()
     def fileno(self): return None
 
-# --- 2. UPLOAD WORKER ---
-def upload_worker(file_url, chat_target, caption, filename):
-    print(f"WORKER: Starting for target: {chat_target}", flush=True)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# --- 2. ASYNC UPLOAD LOGIC ---
+async def perform_upload(data):
+    file_url = data['url']
+    chat_target = data['chat_id']
+    caption = data['caption']
+    filename = data.get('filename', 'video.mp4')
 
-    async def perform_upload():
-        async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
-            print("WORKER: Bot connected!", flush=True)
-            
-            final_chat_id = None
-            
-            # --- TARGET RESOLUTION LOGIC ---
-            # Scenario A: It's an Invite Link (https://t.me/...)
-            if "t.me/+" in str(chat_target) or "joinchat" in str(chat_target):
-                print("WORKER: Detected Invite Link. Resolving...", flush=True)
+    # Start Pyrogram Client
+    async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
+        print("WORKER: Bot connected!", flush=True)
+        
+        final_chat_id = None
+        
+        # --- A. RESOLVE TARGET (Link vs ID vs Username) ---
+        
+        # Case 1: It is an Invite Link (https://t.me/+...)
+        if "t.me/" in str(chat_target) or "joinchat" in str(chat_target):
+            print("WORKER: Detected Invite Link. Joining...", flush=True)
+            try:
+                # join_chat returns the Chat object with the ID
+                chat = await app.join_chat(chat_target)
+                final_chat_id = chat.id
+                print(f"WORKER: Joined! Resolved to ID: {final_chat_id}", flush=True)
+            except UserAlreadyParticipant:
+                print("WORKER: Already joined. resolving via get_chat...", flush=True)
+                # If already joined, we can try getting the chat info using the link or blindly proceed
                 try:
-                    chat = await app.join_chat(chat_target)
+                    # Sometimes get_chat works with invite links if bot is member
+                    chat = await app.get_chat(chat_target)
                     final_chat_id = chat.id
-                    print(f"WORKER: Resolved Link to ID: {final_chat_id}", flush=True)
-                except UserAlreadyParticipant:
-                    print("WORKER: Already in chat, trying generic resolve...", flush=True)
-                    # If already in, we can't easily get ID from join_chat error sometimes,
-                    # but usually it returns the chat. If fails, we might need the numeric ID.
-            
-            # Scenario B: It's a Username or ID (fallback)
-            if not final_chat_id:
-                try:
-                    peer = int(chat_target)
                 except:
-                    peer = chat_target
-                
-                try:
-                    print(f"WORKER: Resolving {peer}...", flush=True)
-                    chat = await app.get_chat(peer)
-                    final_chat_id = chat.id
-                    print(f"WORKER: Resolved to {final_chat_id}", flush=True)
-                except Exception as e:
-                    print(f"WORKER ERROR: Resolve failed: {e}", flush=True)
-                    # Blind fallback
-                    if isinstance(peer, int):
-                        final_chat_id = peer
+                    print("WORKER: Could not resolve link directly. Are you sure the Bot is Admin?", flush=True)
+                    raise Exception("Bot is in channel but cannot resolve ID. Ensure Bot is Admin.")
 
-            if not final_chat_id:
-                raise Exception("Could not resolve Chat ID. Please use an Invite Link for Private Channels.")
+        # Case 2: It is a Username (@movie) or ID (-100...)
+        else:
+            try:
+                peer = int(chat_target) # Try ID
+            except:
+                peer = chat_target # Keep Username
+            
+            try:
+                print(f"WORKER: Resolving {peer}...", flush=True)
+                chat = await app.get_chat(peer)
+                final_chat_id = chat.id
+            except Exception as e:
+                print(f"WORKER ERROR: Resolve failed: {e}", flush=True)
+                # If ID fails resolution, we might be hitting Cold Start. 
+                # Only Invite Links solve Cold Start for Private Channels.
+                if isinstance(peer, int):
+                    final_chat_id = peer # Try blind upload
 
-            # --- UPLOAD ---
-            with SmartStream(file_url, filename) as stream:
-                if stream.total_size == 0:
-                    raise Exception("File size 0. Link expired.")
-                
-                print(f"WORKER: Streaming to {final_chat_id}...", flush=True)
-                msg = await app.send_video(
-                    chat_id=final_chat_id,
-                    video=stream,
-                    caption=caption,
-                    file_name=filename,
-                    supports_streaming=True,
-                    progress=lambda c, t: print(f"Up: {c/1024/1024:.1f}MB") if c % (20*1024*1024) == 0 else None
-                )
-                
-                clean_id = str(msg.chat.id).replace('-100', '')
-                return {
-                    "message_id": msg.id,
-                    "chat_id": msg.chat.id,
-                    "link": f"https://t.me/c/{clean_id}/{msg.id}"
-                }
+        if not final_chat_id:
+            raise Exception("Could not resolve Chat ID. Please check permissions or use Invite Link.")
 
-def ensure_worker_alive():
-    global WORKER_THREAD
-    if WORKER_THREAD is None or not WORKER_THREAD.is_alive():
-        print("SYSTEM: Restarting Zombie Thread...", flush=True)
-        WORKER_THREAD = threading.Thread(target=worker_loop, daemon=True)
-        WORKER_THREAD.start()
+        # --- B. STREAM UPLOAD ---
+        with SmartStream(file_url, filename) as stream:
+            if stream.total_size == 0:
+                raise Exception("File size 0. Link expired.")
+            
+            print(f"WORKER: Streaming to {final_chat_id}...", flush=True)
+            msg = await app.send_video(
+                chat_id=final_chat_id,
+                video=stream,
+                caption=caption,
+                file_name=filename,
+                supports_streaming=True,
+                progress=lambda c, t: print(f"Up: {c/1024/1024:.1f}MB") if c % (20*1024*1024) == 0 else None
+            )
+            
+            # Generate Deep Link
+            clean_id = str(msg.chat.id).replace('-100', '')
+            return {
+                "message_id": msg.id,
+                "chat_id": msg.chat.id,
+                "link": f"https://t.me/c/{clean_id}/{msg.id}"
+            }
 
-# --- QUEUE ---
+# --- 3. QUEUE WORKER (SYNC WRAPPER) ---
 JOB_QUEUE = queue.Queue()
 JOBS = {} 
 WORKER_THREAD = None
 
 def worker_loop():
     print("SYSTEM: Queue Worker Started", flush=True)
+    # Create the Event Loop for this thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
     while True:
         try:
             job_id, data = JOB_QUEUE.get()
             print(f"WORKER: Job {job_id}", flush=True)
             JOBS[job_id]['status'] = 'processing'
             
-            # Extract data
-            file_url = data['url']
-            chat_target = data['chat_id']
-            caption = data['caption']
-            filename = data.get('filename', 'video.mp4')
+            # Run the Async Upload Logic inside this Sync Loop
+            result = loop.run_until_complete(perform_upload(data))
             
-            result = loop.run_until_complete(upload_worker(file_url, chat_target, caption, filename))
             JOBS[job_id]['status'] = 'done'
             JOBS[job_id]['result'] = result
+            print(f"WORKER: Job Done! Link: {result['link']}", flush=True)
+            
         except Exception as e:
             print(f"WORKER ERROR: {e}", flush=True)
             if 'job_id' in locals():
@@ -170,6 +173,13 @@ def worker_loop():
                 JOBS[job_id]['error'] = str(e)
         finally:
             if 'job_id' in locals(): JOB_QUEUE.task_done()
+
+def ensure_worker_alive():
+    global WORKER_THREAD
+    if WORKER_THREAD is None or not WORKER_THREAD.is_alive():
+        print("SYSTEM: Restarting Zombie Thread...", flush=True)
+        WORKER_THREAD = threading.Thread(target=worker_loop, daemon=True)
+        WORKER_THREAD.start()
 
 # --- ROUTES ---
 @app.route('/')
