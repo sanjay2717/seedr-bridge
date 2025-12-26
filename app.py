@@ -596,7 +596,110 @@ def get_link():
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+# Add this route BEFORE the "if __name__ == '__main__':" line
 
+@app.route('/force-join/<chat_id>')
+def force_join(chat_id):
+    """
+    Force bot to join/refresh access to a private channel
+    This updates the session with the access hash
+    """
+    try:
+        chat_id_int = int(chat_id)
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def do_join():
+            async with Client(
+                "bot_session", 
+                api_id=API_ID, 
+                api_hash=API_HASH, 
+                bot_token=BOT_TOKEN, 
+                workdir="/tmp"
+            ) as app:
+                try:
+                    # Method 1: Try to get recent messages (this populates access hash)
+                    print(f"Attempting to fetch messages from {chat_id_int}...", flush=True)
+                    async for message in app.get_chat_history(chat_id_int, limit=1):
+                        print(f"✅ Successfully accessed message: {message.id}", flush=True)
+                        return {
+                            "success": True,
+                            "method": "get_chat_history",
+                            "message": "Bot can now access the channel",
+                            "chat_id": chat_id_int
+                        }
+                    
+                    # If no messages, try get_chat
+                    chat = await app.get_chat(chat_id_int)
+                    return {
+                        "success": True,
+                        "method": "get_chat",
+                        "title": chat.title,
+                        "chat_id": chat_id_int
+                    }
+                    
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "error_type": type(e).__name__
+                    }
+        
+        result = loop.run_until_complete(do_join())
+        loop.close()
+        
+        if result.get('success'):
+            html = f"""
+<!DOCTYPE html>
+<html>
+<head><title>Force Join Result</title>
+<style>
+    body {{ font-family: Arial; max-width: 600px; margin: 50px auto; padding: 20px; }}
+    .success {{ color: green; font-size: 20px; font-weight: bold; }}
+</style>
+</head>
+<body>
+    <h1>✅ Success!</h1>
+    <p class="success">Bot session updated successfully</p>
+    <p><strong>Chat ID:</strong> {result['chat_id']}</p>
+    <p><strong>Method:</strong> {result.get('method', 'N/A')}</p>
+    <p>You can now try uploading to this channel.</p>
+    <p><a href="/check-private/{chat_id}">Re-check access</a></p>
+</body>
+</html>
+            """
+        else:
+            html = f"""
+<!DOCTYPE html>
+<html>
+<head><title>Force Join Result</title>
+<style>
+    body {{ font-family: Arial; max-width: 600px; margin: 50px auto; padding: 20px; }}
+    .error {{ color: red; }}
+</style>
+</head>
+<body>
+    <h1>❌ Failed</h1>
+    <p class="error">Could not access channel</p>
+    <p><strong>Error:</strong> {result.get('error', 'Unknown')}</p>
+    <p><strong>Error Type:</strong> {result.get('error_type', 'N/A')}</p>
+    <h3>Possible Reasons:</h3>
+    <ul>
+        <li>Bot is not actually added as admin (double-check in Telegram)</li>
+        <li>Wrong chat ID (verify it's the correct channel)</li>
+        <li>Bot was banned/removed</li>
+    </ul>
+</body>
+</html>
+            """
+        
+        return html
+        
+    except ValueError:
+        return jsonify({"error": "Invalid chat ID"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 if __name__ == '__main__':
     print("=" * 50, flush=True)
     print("🚀 Seedr-Telegram Bridge Starting", flush=True)
