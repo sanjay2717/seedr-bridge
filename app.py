@@ -2,6 +2,9 @@ import os
 import threading
 import asyncio
 import requests
+import queue
+import uuid
+import time
 from io import IOBase
 from flask import Flask, request, jsonify
 from pyrogram import Client
@@ -32,11 +35,11 @@ class SmartStream(IOBase):
         self.url = url
         self.name = name
         self.mode = 'rb'
-        print(f"STREAM: Connecting to {url[:40]}...")
+        print(f"STREAM: Connecting to {url[:40]}...", flush=True)
         try:
             head = requests.head(url, allow_redirects=True, timeout=10, headers=HEADERS_STREAM)
             self.total_size = int(head.headers.get('content-length', 0))
-            print(f"STREAM: Size {self.total_size}")
+            print(f"STREAM: Size {self.total_size}", flush=True)
         except:
             self.total_size = 0
         self.response = requests.get(url, stream=True, timeout=30, headers=HEADERS_STREAM)
@@ -62,49 +65,45 @@ class SmartStream(IOBase):
     def fileno(self): return None
 
 # --- 2. UPLOAD WORKER ---
-def upload_worker(file_url, chat_target, caption):
-    print(f"WORKER: Starting for target: {chat_target}")
+def upload_worker(file_url, chat_target, caption, filename):
+    print(f"WORKER: Starting for target: {chat_target}", flush=True)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     async def perform_upload():
         async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
-            print("WORKER: Bot connected!")
+            print("WORKER: Bot connected!", flush=True)
             
             final_chat_id = None
             
             # --- TARGET RESOLUTION LOGIC ---
             # Scenario A: It's an Invite Link (https://t.me/...)
             if "t.me/+" in str(chat_target) or "joinchat" in str(chat_target):
-                print("WORKER: Detected Invite Link. resolving...")
+                print("WORKER: Detected Invite Link. Resolving...", flush=True)
                 try:
-                    # join_chat works even if already joined, it returns the Chat object
                     chat = await app.join_chat(chat_target)
                     final_chat_id = chat.id
-                    print(f"WORKER: Resolved Link to ID: {final_chat_id}")
+                    print(f"WORKER: Resolved Link to ID: {final_chat_id}", flush=True)
                 except UserAlreadyParticipant:
-                    # If we can't get the object from the error, we try get_chat
-                    # Note: Usually join_chat returns the chat even if joined
-                    print("WORKER: Already in chat, trying generic resolve...")
+                    print("WORKER: Already in chat, trying generic resolve...", flush=True)
+                    # If already in, we can't easily get ID from join_chat error sometimes,
+                    # but usually it returns the chat. If fails, we might need the numeric ID.
             
-            # Scenario B: It's a Username or ID
+            # Scenario B: It's a Username or ID (fallback)
             if not final_chat_id:
                 try:
-                    # Try converting to int if it looks like an ID
                     peer = int(chat_target)
                 except:
                     peer = chat_target
                 
                 try:
-                    print(f"WORKER: Resolving {peer}...")
+                    print(f"WORKER: Resolving {peer}...", flush=True)
                     chat = await app.get_chat(peer)
                     final_chat_id = chat.id
-                    print(f"WORKER: Resolved to {final_chat_id}")
+                    print(f"WORKER: Resolved to {final_chat_id}", flush=True)
                 except Exception as e:
-                    print(f"WORKER ERROR: Resolve failed: {e}")
-                    # If we failed to resolve a Private ID (-100...), we are stuck.
-                    # We will try to upload blindly using the ID, but it will likely fail 
-                    # if not resolved via Link first.
+                    print(f"WORKER ERROR: Resolve failed: {e}", flush=True)
+                    # Blind fallback
                     if isinstance(peer, int):
                         final_chat_id = peer
 
@@ -112,15 +111,16 @@ def upload_worker(file_url, chat_target, caption):
                 raise Exception("Could not resolve Chat ID. Please use an Invite Link for Private Channels.")
 
             # --- UPLOAD ---
-            with SmartStream(file_url, "video.mp4") as stream:
+            with SmartStream(file_url, filename) as stream:
                 if stream.total_size == 0:
                     raise Exception("File size 0. Link expired.")
                 
-                print(f"WORKER: Streaming to {final_chat_id}...")
+                print(f"WORKER: Streaming to {final_chat_id}...", flush=True)
                 msg = await app.send_video(
                     chat_id=final_chat_id,
                     video=stream,
                     caption=caption,
+                    file_name=filename,
                     supports_streaming=True,
                     progress=lambda c, t: print(f"Up: {c/1024/1024:.1f}MB") if c % (20*1024*1024) == 0 else None
                 )
@@ -153,7 +153,14 @@ def worker_loop():
             job_id, data = JOB_QUEUE.get()
             print(f"WORKER: Job {job_id}", flush=True)
             JOBS[job_id]['status'] = 'processing'
-            result = loop.run_until_complete(perform_upload(data))
+            
+            # Extract data
+            file_url = data['url']
+            chat_target = data['chat_id']
+            caption = data['caption']
+            filename = data.get('filename', 'video.mp4')
+            
+            result = loop.run_until_complete(upload_worker(file_url, chat_target, caption, filename))
             JOBS[job_id]['status'] = 'done'
             JOBS[job_id]['result'] = result
         except Exception as e:
@@ -188,6 +195,20 @@ def job_status(job_id):
     return jsonify(job)
 
 # SEEDR ROUTES
+@app.route('/auth/code', methods=['GET'])
+def get_code():
+    try:
+        resp = requests.get("https://www.seedr.cc/oauth_device/create", params={"client_id": "seedr_xbmc"})
+        return jsonify(resp.json())
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/auth/token', methods=['GET'])
+def get_token():
+    try:
+        resp = requests.get("https://www.seedr.cc/oauth_device/token", params={"client_id": "seedr_xbmc", "grant_type": "device_token", "device_code": request.args.get('device_code')})
+        return jsonify(resp.json())
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     try:
@@ -202,8 +223,9 @@ def list_files():
     folder_id = str(data.get('folder_id', "0"))
     if folder_id == "0": url = "https://www.seedr.cc/api/folder"
     else: url = f"https://www.seedr.cc/api/folder/{folder_id}"
+    params = {"access_token": token}
     try:
-        resp = requests.get(url, params={"access_token": token}, headers=HEADERS_STREAM)
+        resp = requests.get(url, params=params, headers=HEADERS_STREAM)
         return jsonify(resp.json())
     except: return jsonify({})
 
