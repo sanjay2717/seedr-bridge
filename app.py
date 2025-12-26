@@ -76,7 +76,7 @@ class SmartStream(IOBase):
     def __exit__(self, *args): self.close()
     def fileno(self): return None
 
-# --- 2. UPLOAD WORKER (FIXED PEER ID) ---
+# --- 2. UPLOAD WORKER (FIXED WITH PERSISTENT SESSION) ---
 def upload_worker(file_url, chat_id, caption):
     print(f"WORKER: Starting upload to {chat_id}")
     
@@ -84,12 +84,12 @@ def upload_worker(file_url, chat_id, caption):
     asyncio.set_event_loop(loop)
 
     async def perform_upload():
-        async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True) as app:
+        # CRITICAL FIX: Use workdir="/tmp" instead of in_memory=True
+        # This saves the session to disk so peer cache persists
+        async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
             print("WORKER: Bot connected!")
             
-            # --- FIX: CACHE THE PEER ID ---
-            # We explicitly ask Telegram to resolve the chat ID before uploading.
-            # This prevents the "Peer id invalid" error at the end.
+            # Verify channel access and cache the peer
             try:
                 print(f"WORKER: Verifying channel access for {chat_id}...")
                 target_chat = await app.get_chat(int(chat_id))
@@ -106,15 +106,14 @@ def upload_worker(file_url, chat_id, caption):
                     
                     print("WORKER: Streaming to Telegram...")
                     
-                    # We use the integer ID explicitly
                     await app.send_video(
                         chat_id=int(chat_id),
                         video=stream,
                         caption=caption,
                         supports_streaming=True,
-                        progress=lambda c, t: print(f"Upload: {c/1024/1024:.1f}/{t/1024/1024:.1f} MB") if c % (5*1024*1024) == 0 else None
+                        progress=lambda c, t: print(f"Upload: {c/1024/1024:.1f}/{t/1024/1024:.1f} MB") if c % (10*1024*1024) == 0 else None
                     )
-                    print("WORKER: Upload Success!")
+                    print("WORKER: ✅ Upload Success!")
             except Exception as e:
                 print(f"WORKER ERROR: {e}")
                 import traceback
