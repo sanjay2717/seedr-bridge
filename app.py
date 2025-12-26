@@ -84,19 +84,21 @@ def upload_worker(file_url, chat_id, caption):
     asyncio.set_event_loop(loop)
 
     async def perform_upload():
-        # CRITICAL FIX: Use workdir="/tmp" instead of in_memory=True
-        # This saves the session to disk so peer cache persists
+        # CRITICAL: Use workdir="/tmp" for persistent session
         async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
             print("WORKER: Bot connected!")
             
-            # Verify channel access and cache the peer
+            # Accept both username format (@moviessquares) and numeric ID
+            target_chat = chat_id if isinstance(chat_id, str) and chat_id.startswith('@') else int(chat_id)
+            
+            # Verify channel access
             try:
-                print(f"WORKER: Verifying channel access for {chat_id}...")
-                target_chat = await app.get_chat(int(chat_id))
-                print(f"WORKER: Channel verified: {target_chat.title}")
+                print(f"WORKER: Verifying access to {target_chat}...")
+                channel = await app.get_chat(target_chat)
+                print(f"WORKER: ✅ Channel verified: {channel.title}")
             except Exception as e:
-                print(f"WORKER ERROR: Could not access channel: {e}")
-                print("Make sure the Bot is an Admin in the channel!")
+                print(f"WORKER ERROR: Cannot access channel: {e}")
+                print("Make sure the bot is an Admin in @moviessquares!")
                 return
 
             try:
@@ -107,11 +109,11 @@ def upload_worker(file_url, chat_id, caption):
                     print("WORKER: Streaming to Telegram...")
                     
                     await app.send_video(
-                        chat_id=int(chat_id),
+                        chat_id=target_chat,
                         video=stream,
                         caption=caption,
                         supports_streaming=True,
-                        progress=lambda c, t: print(f"Upload: {c/1024/1024:.1f}/{t/1024/1024:.1f} MB") if c % (10*1024*1024) == 0 else None
+                        progress=lambda c, t: print(f"📤 Upload: {c/1024/1024:.1f}/{t/1024/1024:.1f} MB") if c % (10*1024*1024) == 0 else None
                     )
                     print("WORKER: ✅ Upload Success!")
             except Exception as e:
@@ -131,21 +133,80 @@ def upload_worker(file_url, chat_id, caption):
 # --- ROUTES ---
 
 @app.route('/')
-def home(): return "Seedr-Telegram Bridge Active."
+def home(): 
+    return "🎬 Seedr-Telegram Bridge for @moviessquares"
 
 @app.route('/upload-telegram', methods=['POST'])
 def upload_telegram():
+    """
+    Upload a video to @moviessquares
+    
+    Body:
+    {
+      "url": "https://rd8.seedr.cc/...",
+      "chat_id": "@moviessquares",  // Can also use numeric ID
+      "caption": "Movie Title (Year)"
+    }
+    """
     data = request.json
     file_url = data.get('url')
-    chat_id = data.get('chat_id')
-    caption = data.get('caption', "Uploaded via Automation")
+    chat_id = data.get('chat_id', '@moviessquares')  # Default to @moviessquares
+    caption = data.get('caption', "🎬 Uploaded via Automation")
     
-    if not file_url or not chat_id: return jsonify({"error": "Missing params"}), 400
+    if not file_url:
+        return jsonify({"error": "Missing 'url' parameter"}), 400
 
     thread = threading.Thread(target=upload_worker, args=(file_url, chat_id, caption))
     thread.start()
     
-    return jsonify({"status": "Upload started"})
+    return jsonify({"status": "Upload started", "target": chat_id})
+
+# --- TEST MESSAGE (INITIALIZE CHANNEL) ---
+@app.route('/test-channel', methods=['POST'])
+def test_channel():
+    """
+    Send a test message to verify bot access
+    
+    Body (optional):
+    {
+      "chat_id": "@moviessquares"  // Defaults to @moviessquares if not provided
+    }
+    """
+    data = request.json or {}
+    chat_id = data.get('chat_id', '@moviessquares')
+    
+    async def send_test():
+        async with Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workdir="/tmp") as app:
+            try:
+                # Send test message
+                msg = await app.send_message(chat_id, "🤖 Bot initialized successfully!\n✅ Ready to upload movies.")
+                
+                # Get channel info
+                channel = await app.get_chat(chat_id)
+                
+                return {
+                    "success": True,
+                    "message": "Bot can access the channel!",
+                    "channel_title": channel.title,
+                    "channel_id": channel.id,
+                    "channel_username": channel.username,
+                    "message_id": msg.id
+                }
+            except Exception as e:
+                import traceback
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "solution": "Make sure the bot is an Admin in @moviessquares with 'Post Messages' permission",
+                    "traceback": traceback.format_exc()
+                }
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(send_test())
+    loop.close()
+    
+    return jsonify(result)
 
 # ==========================================
 # WORKING SEEDR ROUTES (PRESERVED)
