@@ -22,12 +22,16 @@ if API_ID:
     except:
         pass
 
-# --- QUEUE SYSTEM ---
-# This ensures we only upload ONE file at a time to save RAM
-JOB_QUEUE = queue.Queue()
-JOBS = {}  # Stores status: {job_id: {'status': '...', 'result': ...}}
+HEADERS_STREAM = {
+    "User-Agent": "Seedr Android/1.0",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
 
-# --- 1. SMART STREAMER ---
+# --- QUEUE SYSTEM ---
+JOB_QUEUE = queue.Queue()
+JOBS = {} 
+
+# --- 1. SMART STREAMER (WORKING) ---
 class SmartStream(IOBase):
     def __init__(self, url, name):
         super().__init__()
@@ -36,17 +40,13 @@ class SmartStream(IOBase):
         self.mode = 'rb'
         
         print(f"STREAM: Connecting to {url[:40]}...")
-        # Headers to look like a browser/app
-        headers = {"User-Agent": "Seedr Android/1.0"}
-        
         try:
-            head = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
+            head = requests.head(url, allow_redirects=True, timeout=10, headers=HEADERS_STREAM)
             self.total_size = int(head.headers.get('content-length', 0))
-            print(f"STREAM: Size {self.total_size} bytes")
         except:
             self.total_size = 0
 
-        self.response = requests.get(url, stream=True, timeout=30, headers=headers)
+        self.response = requests.get(url, stream=True, timeout=30, headers=HEADERS_STREAM)
         self.raw = self.response.raw
         self.raw.decode_content = True
         self.current_pos = 0
@@ -69,24 +69,21 @@ class SmartStream(IOBase):
         if not self._closed:
             self._closed = True
             if hasattr(self, 'response'): self.response.close()
+    def fileno(self): return None
 
-# --- 2. BACKGROUND WORKER (PROCESSES THE QUEUE) ---
+# --- 2. BACKGROUND WORKER ---
 def worker_loop():
     print("SYSTEM: Queue Worker Started")
-    
-    # Create an event loop for this background thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     while True:
-        # Wait for a job
         job_id, data = JOB_QUEUE.get()
         print(f"WORKER: Processing Job {job_id}")
-        
         JOBS[job_id]['status'] = 'processing'
         
         try:
-            # Run the upload in the async loop
+            # Run upload
             result = loop.run_until_complete(perform_upload(data))
             JOBS[job_id]['status'] = 'done'
             JOBS[job_id]['result'] = result
@@ -101,7 +98,7 @@ async def perform_upload(data):
     file_url = data['url']
     chat_id = data['chat_id']
     caption = data['caption']
-    filename = data.get('filename', 'video.mp4') # Default to video.mp4 if missing
+    filename = data.get('filename', 'video.mp4')
 
     # Handle Username vs ID
     target = chat_id
@@ -116,76 +113,57 @@ async def perform_upload(data):
             chat = await app.get_chat(target)
             target = chat.id
         except:
-            print(f"WORKER: Could not resolve {target}, trying anyway...")
+            pass # Try anyway
 
         # Upload
         with SmartStream(file_url, filename) as stream:
             if stream.total_size == 0:
-                raise Exception("File size is 0. Link expired.")
+                raise Exception("File size 0. Link expired.")
             
-            print(f"WORKER: Streaming {filename} to {target}...")
-            
-            # Capture the sent message object
+            print(f"WORKER: Streaming {filename}...")
             msg = await app.send_video(
                 chat_id=target,
                 video=stream,
                 caption=caption,
                 supports_streaming=True,
-                file_name=filename, # Telegram shows this name
+                file_name=filename,
                 progress=lambda c, t: print(f"Up: {c/1024/1024:.1f}MB") if c % (20*1024*1024) == 0 else None
             )
             
-            print("WORKER: Upload Complete!")
-            
-            # Return critical info to n8n
             return {
                 "message_id": msg.id,
                 "chat_id": msg.chat.id,
-                "chat_title": msg.chat.title,
-                "file_id": msg.video.file_id
+                "file_id": msg.video.file_id,
+                "link": f"https://t.me/c/{str(msg.chat.id).replace('-100', '')}/{msg.id}"
             }
 
-# Start the worker thread immediately
+# Start Worker
 threading.Thread(target=worker_loop, daemon=True).start()
 
 # --- ROUTES ---
 
 @app.route('/')
-def home(): 
-    return f"Queue Active. Pending Jobs: {JOB_QUEUE.qsize()}"
+def home(): return f"Queue Active. Jobs: {JOB_QUEUE.qsize()}"
 
 @app.route('/upload-telegram', methods=['POST'])
 def upload_telegram():
-    """
-    Input: { "url": "...", "chat_id": "...", "caption": "...", "filename": "Leo.mp4" }
-    Output: { "job_id": "123-abc", "status": "queued" }
-    """
     data = request.json
     if not data.get('url') or not data.get('chat_id'):
         return jsonify({"error": "Missing params"}), 400
         
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {'status': 'queued', 'submitted_at': time.time()}
-    
-    # Add to queue
     JOB_QUEUE.put((job_id, data))
     
-    return jsonify({
-        "job_id": job_id,
-        "status": "queued",
-        "message": "Job added to queue. Poll /job-status/<job_id> to check."
-    })
+    return jsonify({"job_id": job_id, "status": "queued"})
 
 @app.route('/job-status/<job_id>', methods=['GET'])
 def job_status(job_id):
     job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"status": "not_found"}), 404
+    if not job: return jsonify({"status": "not_found"}), 404
     return jsonify(job)
 
 # --- SEEDR ROUTES (UNCHANGED) ---
-HEADERS_ANDROID = {"User-Agent": "Seedr Android/1.0", "Content-Type": "application/x-www-form-urlencoded"}
-
 @app.route('/auth/code', methods=['GET'])
 def get_code():
     try:
@@ -202,10 +180,8 @@ def get_token():
 
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
-    url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
-    payload = {"access_token": request.json.get('token'), "func": "add_torrent", "torrent_magnet": request.json.get('magnet')}
     try:
-        resp = requests.post(url, data=payload)
+        resp = requests.post("https://www.seedr.cc/oauth_test/resource.php?json=1", data={"access_token": request.json.get('token'), "func": "add_torrent", "torrent_magnet": request.json.get('magnet')})
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)})
 
@@ -216,18 +192,15 @@ def list_files():
     folder_id = str(data.get('folder_id', "0"))
     if folder_id == "0": url = "https://www.seedr.cc/api/folder"
     else: url = f"https://www.seedr.cc/api/folder/{folder_id}"
-    params = {"access_token": token}
     try:
-        resp = requests.get(url, params=params, headers=HEADERS_ANDROID)
+        resp = requests.get(url, params={"access_token": token}, headers=HEADERS_STREAM)
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)}), 500
 
 @app.route('/get-link', methods=['POST'])
 def get_link():
-    url = "https://www.seedr.cc/oauth_test/resource.php?json=1"
-    payload = {"access_token": request.json.get('token'), "func": "fetch_file", "folder_file_id": str(request.json.get('file_id'))}
     try:
-        resp = requests.post(url, data=payload)
+        resp = requests.post("https://www.seedr.cc/oauth_test/resource.php?json=1", data={"access_token": request.json.get('token'), "func": "fetch_file", "folder_file_id": str(request.json.get('file_id'))})
         return jsonify(resp.json())
     except Exception as e: return jsonify({"error": str(e)}), 500
 
