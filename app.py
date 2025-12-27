@@ -900,34 +900,39 @@ folder_id = str(request.json.get('folder_id'))
     
     return jsonify({"result": True, "code": 200})
     
+# ... [previous code] ...
+
 except Exception as e:
     print(f"PIKPAK ERROR: {e}", flush=True)
     return jsonify({"error": str(e)}), 500
---- CLEANUP EXPIRED SESSIONS ---
+
+# --- CLEANUP EXPIRED SESSIONS ---
 def cleanup_sessions():
-"""Remove expired sessions"""
-while True:
-try:
-time.sleep(60)
-current_time = time.time()
-        with SESSION_LOCK:
-            expired = [k for k, v in MESSAGE_SESSIONS.items() if current_time > v['timeout']]
-            for session_id in expired:
-                del MESSAGE_SESSIONS[session_id]
-                print(f"SESSION: Cleaned up expired \"{session_id}\"", flush=True)
-    except Exception as e:
-        print(f"CLEANUP ERROR: {e}", flush=True)
-Start cleanup thread
+    """Remove expired sessions"""
+    while True:
+        try:
+            time.sleep(60)
+            current_time = time.time()
+            with SESSION_LOCK:
+                expired = [k for k, v in MESSAGE_SESSIONS.items() if current_time > v['timeout']]
+                for session_id in expired:
+                    del MESSAGE_SESSIONS[session_id]
+                    print(f"SESSION: Cleaned up expired \"{session_id}\"", flush=True)
+        except Exception as e:
+            print(f"CLEANUP ERROR: {e}", flush=True)
+
+# Start cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_sessions, daemon=True)
 cleanup_thread.start()
-if name == 'main':
-print("=" * 60, flush=True)
-print("🚀 PikPak Telegram Bridge Starting (4-Account Rotation)", flush=True)
-print("=" * 60, flush=True)
-# Initialize accounts
-for i, acc in enumerate(PIKPAK_ACCOUNTS):
-    if acc.get('email'):
-        print(f"Account {i+1}: {acc['email']}", flush=True)
 
-ensure_worker_alive()
-app.run(host='0.0.0.0', port=10000)
+if __name__ == '__main__':
+    print("=" * 60, flush=True)
+    print("🚀 PikPak Telegram Bridge Starting (4-Account Rotation)", flush=True)
+    print("=" * 60, flush=True)
+    # Initialize accounts
+    for i, acc in enumerate(PIKPAK_ACCOUNTS):
+        if acc.get('email'):
+            print(f"Account {i+1}: {acc['email']}", flush=True)
+
+    ensure_worker_alive()
+    app.run(host='0.0.0.0', port=10000)
