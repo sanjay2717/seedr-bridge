@@ -6,6 +6,7 @@ import queue
 import uuid
 import time
 import re
+import json
 from datetime import datetime, timedelta
 from io import IOBase
 from flask import Flask, request, jsonify
@@ -28,8 +29,8 @@ if API_ID:
         pass
 
 HEADERS_STREAM = {
-    "User-Agent": "Seedr Android/1.0",
-    "Content-Type": "application/x-www-form-urlencoded"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "*/*"
 }
 
 # Message collection storage
@@ -43,7 +44,7 @@ class SmartStream(IOBase):
         self.url = url
         self.name = name
         self.mode = 'rb'
-        print(f"STREAM: Connecting to {url[:40]}...", flush=True)
+        print(f"STREAM: Connecting to {url[:60]}...", flush=True)
         try:
             head = requests.head(url, allow_redirects=True, timeout=10, headers=HEADERS_STREAM)
             self.total_size = int(head.headers.get('content-length', 0))
@@ -184,7 +185,7 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
                 
                 with SmartStream(file_url, filename) as stream:
                     if stream.total_size == 0:
-                        raise Exception("File size is 0. Seedr link expired.")
+                        raise Exception("File size is 0. Download link expired.")
                     
                     print(f"WORKER: Uploading {filename} ({stream.total_size/1024/1024:.1f}MB)...", flush=True)
                     
@@ -278,7 +279,7 @@ def worker_loop():
                 notification_msg = f"⚠️ **Skipped Upload**\n\n" \
                                    f"Movie: {movie_name}\n" \
                                    f"File size: {file_size_mb:.1f}MB\n" \
-                                   f"Reason: Exceeds 2GB Seedr limit"
+                                   f"Reason: Exceeds 2GB limit"
                 loop.run_until_complete(send_admin_notification(notification_msg))
                 raise Exception(f"File too large: {file_size_mb:.1f}MB")
             
@@ -331,23 +332,24 @@ def home():
     ensure_worker_alive()
     return jsonify({
         "status": "online",
+        "service": "Debrid-Link Bridge",
         "queue": JOB_QUEUE.qsize(),
         "jobs": len(JOBS),
         "sessions": len(MESSAGE_SESSIONS),
         "worker_alive": WORKER_THREAD.is_alive() if WORKER_THREAD else False
     })
 
-# ✅ FIX #1: UPDATED SESSION ROUTES
+# --- SESSION ROUTES ---
 @app.route('/start-session', methods=['POST'])
 def start_session():
     """Start message collection session"""
     data = request.json
-    poster_msg_id = str(data.get('poster_message_id'))  # ✅ Force string
+    poster_msg_id = str(data.get('poster_message_id'))
     
     with SESSION_LOCK:
         MESSAGE_SESSIONS[poster_msg_id] = {
             'created': time.time(),
-            'timeout': time.time() + 300,  # 5 minutes
+            'timeout': time.time() + 300,
             'metadata': data.get('metadata', {}),
             'magnets': [],
             'status': 'collecting'
@@ -360,7 +362,7 @@ def start_session():
 def add_magnet_to_session():
     """Add magnet to session"""
     data = request.json
-    poster_msg_id = str(data.get('poster_message_id'))  # ✅ Force string
+    poster_msg_id = str(data.get('poster_message_id'))
     magnet = data.get('magnet')
     
     with SESSION_LOCK:
@@ -385,7 +387,7 @@ def add_magnet_to_session():
 @app.route('/get-session/<poster_msg_id>', methods=['GET'])
 def get_session(poster_msg_id):
     """Get session data"""
-    poster_msg_id = str(poster_msg_id)  # ✅ Force string
+    poster_msg_id = str(poster_msg_id)
     
     with SESSION_LOCK:
         if poster_msg_id not in MESSAGE_SESSIONS:
@@ -403,7 +405,7 @@ def get_session(poster_msg_id):
 def complete_session():
     """Mark session as complete and return data"""
     data = request.json
-    poster_msg_id = str(data.get('poster_message_id'))  # ✅ Force string
+    poster_msg_id = str(data.get('poster_message_id'))
     
     with SESSION_LOCK:
         if poster_msg_id not in MESSAGE_SESSIONS:
@@ -426,7 +428,6 @@ def complete_session():
         
         return jsonify(result)
 
-# ✅ NEW: DEBUG ENDPOINT
 @app.route('/debug/sessions', methods=['GET'])
 def debug_sessions():
     """Debug: Show all active sessions"""
@@ -441,6 +442,7 @@ def debug_sessions():
             } for k, v in MESSAGE_SESSIONS.items()}
         })
 
+# --- TELEGRAM UPLOAD ROUTES ---
 @app.route('/upload-telegram', methods=['POST'])
 def upload_telegram():
     """Upload video"""
@@ -491,41 +493,56 @@ def detect_quality_api():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- SEEDR ROUTES WITH RETRY ---
+# --- DEBRID-LINK API ROUTES ---
+
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
-    """Add magnet to Seedr with retry"""
+    """Add magnet to Debrid-Link with retry"""
     max_retries = 3
     retry_count = 0
     last_error = None
     
     while retry_count < max_retries:
         try:
+            token = request.json.get('token')
+            magnet = request.json.get('magnet')
+            
+            print(f"DEBRID: Adding magnet (attempt {retry_count + 1}/{max_retries})", flush=True)
+            
             resp = requests.post(
-                "https://www.seedr.cc/oauth_test/resource.php?json=1",
-                data={
-                    "access_token": request.json.get('token'),
-                    "func": "add_torrent",
-                    "torrent_magnet": request.json.get('magnet')
-                },
+                "https://debrid-link.com/api/v2/seedbox/add",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"url": magnet, "async": True},
                 timeout=30
             )
+            
             result = resp.json()
             
-            if 'error' in result or result.get('result') == False:
-                raise Exception(result.get('error', 'Unknown Seedr error'))
+            if result.get('success') == False:
+                raise Exception(result.get('error', 'Unknown Debrid-Link error'))
             
-            return jsonify(result)
+            # Extract torrent ID from response
+            torrent_data = result.get('value', {})
+            torrent_id = torrent_data.get('id')
+            
+            print(f"DEBRID: ✅ Torrent added successfully (ID: {torrent_id})", flush=True)
+            
+            return jsonify({
+                "result": True,
+                "id": torrent_id,
+                "name": torrent_data.get('name', ''),
+                "code": 200
+            })
             
         except Exception as e:
             last_error = str(e)
             retry_count += 1
             if retry_count < max_retries:
-                print(f"SEEDR: Add magnet retry {retry_count}/{max_retries}", flush=True)
+                print(f"DEBRID: Retry {retry_count}/{max_retries} due to: {last_error}", flush=True)
                 time.sleep(10)
             else:
                 asyncio.run(send_admin_notification(
-                    f"⚠️ **Seedr Add Magnet Failed**\n\n"
+                    f"⚠️ **Debrid-Link Add Failed**\n\n"
                     f"Retries: {max_retries}/{max_retries}\n"
                     f"Error: {last_error}\n"
                     f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}"
@@ -534,127 +551,154 @@ def add_magnet():
 
 @app.route('/list-files', methods=['POST'])
 def list_files():
-    """List Seedr files with retry"""
+    """List Debrid-Link files with retry"""
     max_retries = 3
     retry_count = 0
     last_error = None
     
     while retry_count < max_retries:
         try:
-            data = request.json
-            token = data.get('token')
-            folder_id = str(data.get('folder_id', "0"))
-            
-            if folder_id == "0":
-                url = "https://www.seedr.cc/api/folder"
-            else:
-                url = f"https://www.seedr.cc/api/folder/{folder_id}"
+            token = request.json.get('token')
+            folder_id = request.json.get('folder_id', '0')
             
             resp = requests.get(
-                url, 
-                params={"access_token": token}, 
-                headers=HEADERS_STREAM,
+                "https://debrid-link.com/api/v2/seedbox/list",
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=30
             )
+            
             result = resp.json()
             
-            # Check if files exist
-            if 'folders' in result and len(result.get('folders', [])) == 0 and len(result.get('files', [])) == 0:
-                if retry_count < max_retries - 1:
-                    raise Exception("No files found yet")
+            if result.get('success') == False:
+                raise Exception(result.get('error', 'Failed to list files'))
             
-            return jsonify(result)
+            torrents = result.get('value', [])
+            
+            # Root level - return list of torrents
+            if folder_id == '0' or folder_id == 0:
+                if not torrents:
+                    if retry_count < max_retries - 1:
+                        raise Exception("No torrents found yet, retrying...")
+                    return jsonify({"folders": [], "files": []})
+                
+                folders = [{
+                    'id': str(t['id']),
+                    'name': t['name']
+                } for t in torrents]
+                
+                return jsonify({"folders": folders, "files": []})
+            
+            # Specific torrent - return its files
+            folder_id_str = str(folder_id)
+            torrent = next((t for t in torrents if str(t['id']) == folder_id_str), None)
+            
+            if not torrent:
+                raise Exception(f"Torrent {folder_id} not found")
+            
+            files = [{
+                'folder_file_id': str(f['id']),
+                'name': f['name'],
+                'size': f['size']
+            } for f in torrent.get('files', [])]
+            
+            return jsonify({"files": files, "folders": []})
             
         except Exception as e:
             last_error = str(e)
             retry_count += 1
             if retry_count < max_retries:
-                print(f"SEEDR: List files retry {retry_count}/{max_retries}", flush=True)
+                print(f"DEBRID: List files retry {retry_count}/{max_retries}", flush=True)
                 time.sleep(10)
             else:
                 return jsonify({"error": last_error, "retries": max_retries}), 500
 
 @app.route('/get-link', methods=['POST'])
 def get_link():
-    """Get Seedr download link"""
+    """Get download link from Debrid-Link"""
     try:
-        resp = requests.post(
-            "https://www.seedr.cc/oauth_test/resource.php?json=1",
-            data={
-                "access_token": request.json.get('token'),
-                "func": "fetch_file",
-                "folder_file_id": str(request.json.get('file_id'))
-            },
-            timeout=30
-        )
-        return jsonify(resp.json())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ✅ FIX #3: UPDATED DELETE FOLDER ROUTE
-@app.route('/delete-folder', methods=['POST'])
-def delete_folder():
-    """Delete folder from Seedr with verification"""
-    try:
-        folder_id = request.json.get('folder_id')
         token = request.json.get('token')
+        file_id = request.json.get('file_id')
         
-        # Validate folder_id
-        if not folder_id or folder_id == 'null' or folder_id == 'None' or str(folder_id).lower() == 'none':
-            print(f"SEEDR ERROR: Invalid folder_id: {folder_id}", flush=True)
-            return jsonify({"error": "Invalid folder_id", "received": str(folder_id)}), 400
+        print(f"DEBRID: Getting download link for file {file_id}", flush=True)
         
-        # Convert to string
-        folder_id = str(folder_id)
-        
-        print(f"SEEDR: Attempting to delete folder \"{folder_id}\"", flush=True)
-        
-        # ✅ FIX: Use proper JSON format for delete_arr
-        import json
-        
-        resp = requests.post(
-            "https://www.seedr.cc/oauth_test/resource.php?json=1",
-            data={
-                "access_token": token,
-                "func": "delete",
-                "delete_arr": json.dumps([int(folder_id)])  # ✅ Convert to int and use json.dumps
-            },
+        # First, get list of all torrents to find which one contains this file
+        resp = requests.get(
+            "https://debrid-link.com/api/v2/seedbox/list",
+            headers={"Authorization": f"Bearer {token}"},
             timeout=30
         )
         
         result = resp.json()
-        print(f"SEEDR: Delete response: {result}", flush=True)
+        if result.get('success') == False:
+            raise Exception("Failed to list torrents")
         
-        # ✅ Verify deletion by listing folders again
-        verify_resp = requests.get(
-            "https://www.seedr.cc/api/folder",
-            params={"access_token": token},
+        torrents = result.get('value', [])
+        
+        # Find the file in torrents
+        download_url = None
+        for torrent in torrents:
+            for file in torrent.get('files', []):
+                if str(file['id']) == str(file_id):
+                    download_url = file.get('downloadUrl')
+                    break
+            if download_url:
+                break
+        
+        if not download_url:
+            raise Exception(f"File {file_id} not found or download URL unavailable")
+        
+        print(f"DEBRID: ✅ Got download link", flush=True)
+        
+        return jsonify({"url": download_url})
+        
+    except Exception as e:
+        print(f"DEBRID ERROR: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/delete-folder', methods=['POST'])
+def delete_folder():
+    """Delete torrent from Debrid-Link"""
+    try:
+        folder_id = str(request.json.get('folder_id'))
+        token = request.json.get('token')
+        
+        if not folder_id or folder_id == 'null' or folder_id == 'None':
+            print(f"DEBRID ERROR: Invalid folder_id: {folder_id}", flush=True)
+            return jsonify({"error": "Invalid folder_id"}), 400
+        
+        print(f"DEBRID: Attempting to delete torrent \"{folder_id}\"", flush=True)
+        
+        resp = requests.delete(
+            f"https://debrid-link.com/api/v2/seedbox/{folder_id}",
+            headers={"Authorization": f"Bearer {token}"},
             timeout=30
         )
         
-        verify_data = verify_resp.json()
-        remaining_folders = [f['id'] for f in verify_data.get('folders', [])]
+        result = resp.json()
+        print(f"DEBRID: Delete response: {result}", flush=True)
         
-        if int(folder_id) in remaining_folders:
-            print(f"SEEDR WARNING: Folder {folder_id} still exists after delete!", flush=True)
-            # Try deleting again
-            resp2 = requests.post(
-                "https://www.seedr.cc/oauth_test/resource.php?json=1",
-                data={
-                    "access_token": token,
-                    "func": "delete",
-                    "delete_arr": json.dumps([int(folder_id)])
-                },
-                timeout=30
-            )
-            print(f"SEEDR: Second delete attempt: {resp2.json()}", flush=True)
-        else:
-            print(f"SEEDR: ✅ Folder {folder_id} successfully deleted!", flush=True)
+        # Verify deletion
+        time.sleep(2)  # Wait a moment
         
-        return jsonify(result)
+        verify_resp = requests.get(
+            "https://debrid-link.com/api/v2/seedbox/list",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30
+        )
+        
+        verify_result = verify_resp.json()
+        if verify_result.get('success'):
+            remaining_ids = [str(t['id']) for t in verify_result.get('value', [])]
+            
+            if folder_id not in remaining_ids:
+                print(f"DEBRID: ✅ Torrent {folder_id} successfully deleted!", flush=True)
+            else:
+                print(f"DEBRID WARNING: Torrent {folder_id} still exists after delete!", flush=True)
+        
+        return jsonify({"result": True, "code": 200})
         
     except Exception as e:
-        print(f"SEEDR ERROR: {e}", flush=True)
+        print(f"DEBRID ERROR: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
 
 # --- CLEANUP EXPIRED SESSIONS ---
@@ -662,7 +706,7 @@ def cleanup_sessions():
     """Remove expired sessions"""
     while True:
         try:
-            time.sleep(60)  # Check every minute
+            time.sleep(60)
             current_time = time.time()
             
             with SESSION_LOCK:
@@ -679,7 +723,7 @@ cleanup_thread.start()
 
 if __name__ == '__main__':
     print("=" * 50, flush=True)
-    print("🚀 Seedr-Telegram Bridge Starting", flush=True)
+    print("🚀 Debrid-Link Telegram Bridge Starting", flush=True)
     print("=" * 50, flush=True)
     ensure_worker_alive()
     app.run(host='0.0.0.0', port=10000)
