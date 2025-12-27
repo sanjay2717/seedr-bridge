@@ -594,26 +594,30 @@ def get_link():
 # ✅ FIX #3: UPDATED DELETE FOLDER ROUTE
 @app.route('/delete-folder', methods=['POST'])
 def delete_folder():
-    """Delete folder from Seedr"""
+    """Delete folder from Seedr with verification"""
     try:
         folder_id = request.json.get('folder_id')
+        token = request.json.get('token')
         
-        # ✅ Validate folder_id
+        # Validate folder_id
         if not folder_id or folder_id == 'null' or folder_id == 'None' or str(folder_id).lower() == 'none':
             print(f"SEEDR ERROR: Invalid folder_id: {folder_id}", flush=True)
             return jsonify({"error": "Invalid folder_id", "received": str(folder_id)}), 400
         
-        # Convert to string (Seedr expects string)
+        # Convert to string
         folder_id = str(folder_id)
         
         print(f"SEEDR: Attempting to delete folder \"{folder_id}\"", flush=True)
         
+        # ✅ FIX: Use proper JSON format for delete_arr
+        import json
+        
         resp = requests.post(
             "https://www.seedr.cc/oauth_test/resource.php?json=1",
             data={
-                "access_token": request.json.get('token'),
+                "access_token": token,
                 "func": "delete",
-                "delete_arr": f"[{folder_id}]"
+                "delete_arr": json.dumps([int(folder_id)])  # ✅ Convert to int and use json.dumps
             },
             timeout=30
         )
@@ -621,7 +625,34 @@ def delete_folder():
         result = resp.json()
         print(f"SEEDR: Delete response: {result}", flush=True)
         
+        # ✅ Verify deletion by listing folders again
+        verify_resp = requests.get(
+            "https://www.seedr.cc/api/folder",
+            params={"access_token": token},
+            timeout=30
+        )
+        
+        verify_data = verify_resp.json()
+        remaining_folders = [f['id'] for f in verify_data.get('folders', [])]
+        
+        if int(folder_id) in remaining_folders:
+            print(f"SEEDR WARNING: Folder {folder_id} still exists after delete!", flush=True)
+            # Try deleting again
+            resp2 = requests.post(
+                "https://www.seedr.cc/oauth_test/resource.php?json=1",
+                data={
+                    "access_token": token,
+                    "func": "delete",
+                    "delete_arr": json.dumps([int(folder_id)])
+                },
+                timeout=30
+            )
+            print(f"SEEDR: Second delete attempt: {resp2.json()}", flush=True)
+        else:
+            print(f"SEEDR: ✅ Folder {folder_id} successfully deleted!", flush=True)
+        
         return jsonify(result)
+        
     except Exception as e:
         print(f"SEEDR ERROR: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
