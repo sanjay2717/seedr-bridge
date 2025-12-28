@@ -1217,13 +1217,36 @@ def add_magnet():
             # 2. Ensure logged in
             tokens = ensure_logged_in(account)
             
-            # 3. Add magnet
+           # 3. Add magnet
             task = pikpak_add_magnet(magnet, account, tokens)
-            folder_id = task.get("file_id")
+            file_id = task.get("file_id")
             file_name = task.get("file_name", "Unknown")
-            
-            # 4. Poll until complete
-            pikpak_poll_download(folder_id, account, tokens, timeout=120)
+
+# 3.5 CHECK FOR EMPTY FILE_ID (prevents infinite loop)
+            if not file_id or file_id.strip() == "":
+                error_msg = "PikPak returned empty file_id - magnet may be invalid or unavailable"
+                print(f"PIKPAK: ❌ {error_msg}", flush=True)
+                print(f"PIKPAK: ⚠️ STOPPING - No retry to save quota", flush=True)
+                try:
+                    import asyncio
+                    asyncio.run(send_admin_notification(
+                     f"⚠️ INVALID MAGNET - NO RETRY\n\n"
+                     f"🎬 File: {file_name}\n"
+                     f"🔗 Magnet: {magnet[:60]}...\n"
+                     f"❌ Error: {error_msg}\n"
+                     f"👤 Account: {account['id']}\n\n"
+                  ))
+                except:
+                    pass
+
+                return jsonify({
+                       "error": error_msg,
+                       "retry": False,
+                    "account_used": account["id"]
+                   }), 400
+
+# 4. Poll until complete
+            pikpak_poll_download(file_id, account, tokens, timeout=120)
             
             # 5. Refresh tokens (in case expired during poll)
             tokens = ensure_logged_in(account)
