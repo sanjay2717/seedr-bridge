@@ -343,11 +343,15 @@ def ensure_logged_in(account):
     
     return tokens
 
-def select_available_account():
+def select_available_account(exclude_accounts=None):
     """
     Select PikPak account with capacity
     Implements rotation and daily limit (5/day)
+    exclude_accounts: list of account IDs to skip (exhausted ones)
     """
+    if exclude_accounts is None:
+        exclude_accounts = []
+    
     today = datetime.now().strftime("%Y-%m-%d")
     
     try:
@@ -356,15 +360,19 @@ def select_available_account():
     except:
         usage = {}
     
-    # Debug: Print what we have
     print(f"PIKPAK: Checking accounts. Today: {today}", flush=True)
-    print(f"PIKPAK: Current usage data: {usage}", flush=True)
+    print(f"PIKPAK: Excluding accounts: {exclude_accounts}", flush=True)
     print(f"PIKPAK: Total accounts loaded: {len(PIKPAK_ACCOUNTS)}", flush=True)
     
     if len(PIKPAK_ACCOUNTS) == 0:
         raise Exception("No PikPak accounts configured! Check environment variables.")
     
     for account in PIKPAK_ACCOUNTS:
+        # Skip excluded accounts
+        if account["id"] in exclude_accounts:
+            print(f"PIKPAK: Account {account['id']}: SKIPPED (exhausted)", flush=True)
+            continue
+        
         account_key = f"account_{account['id']}"
         account_usage = usage.get(account_key, {})
         
@@ -381,7 +389,22 @@ def select_available_account():
             print(f"PIKPAK: ✅ Selected account {account['id']}", flush=True)
             return account
     
-    raise Exception("All PikPak accounts exhausted for today (20/20 downloads used)")
+    raise Exception("All PikPak accounts exhausted for today")
+
+
+def mark_account_exhausted(account_id):
+    """Mark account as exhausted for today (hit PikPak's limit)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    tokens = load_pikpak_tokens()
+    
+    if "daily_usage" not in tokens:
+        tokens["daily_usage"] = {}
+    
+    account_key = f"account_{account_id}"
+    tokens["daily_usage"][account_key] = {"date": today, "count": 5}  # Mark as full
+    save_pikpak_tokens(tokens)
+    
+    print(f"PIKPAK: ⚠️ Account {account_id} marked as exhausted", flush=True)
 
 def increment_account_usage(account_id):
     """Increment daily download counter for account"""
