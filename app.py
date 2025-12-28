@@ -349,19 +349,36 @@ def select_available_account():
     Implements rotation and daily limit (5/day)
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    usage = load_pikpak_tokens().get("daily_usage", {})
+    
+    try:
+        tokens_data = load_pikpak_tokens()
+        usage = tokens_data.get("daily_usage", {})
+    except:
+        usage = {}
+    
+    # Debug: Print what we have
+    print(f"PIKPAK: Checking accounts. Today: {today}", flush=True)
+    print(f"PIKPAK: Current usage data: {usage}", flush=True)
+    print(f"PIKPAK: Total accounts loaded: {len(PIKPAK_ACCOUNTS)}", flush=True)
+    
+    if len(PIKPAK_ACCOUNTS) == 0:
+        raise Exception("No PikPak accounts configured! Check environment variables.")
     
     for account in PIKPAK_ACCOUNTS:
         account_key = f"account_{account['id']}"
         account_usage = usage.get(account_key, {})
         
-        # Reset if new day
+        # Reset if new day OR no usage data exists
         if account_usage.get("date") != today:
-            account_usage = {"date": today, "count": 0}
+            downloads_today = 0
+        else:
+            downloads_today = account_usage.get("count", 0)
+        
+        print(f"PIKPAK: Account {account['id']}: {downloads_today}/5 downloads today", flush=True)
         
         # Check limit (5 per day)
-        if account_usage.get("count", 0) < 5:
-            print(f"PIKPAK: Selected account {account['id']} ({account_usage.get('count', 0)}/5 today)", flush=True)
+        if downloads_today < 5:
+            print(f"PIKPAK: ✅ Selected account {account['id']}", flush=True)
             return account
     
     raise Exception("All PikPak accounts exhausted for today (20/20 downloads used)")
