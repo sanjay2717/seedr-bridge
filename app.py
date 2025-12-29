@@ -10,7 +10,7 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 from io import IOBase
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from pyrogram import Client
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -39,6 +39,59 @@ EMERGENCY_STOP = False
 # Message collection storage
 MESSAGE_SESSIONS = {}
 SESSION_LOCK = threading.Lock()
+
+# Activity log storage (in memory)
+ACTIVITY_LOG = []
+MAX_ACTIVITY_LOG = 50
+
+# Daily stats storage
+DAILY_STATS = {
+    "date": None,
+    "downloads": 0,
+    "uploads": 0,
+    "failed": 0,
+    "total_bytes": 0,
+    "total_time": 0
+}
+
+def log_activity(status, message):
+    """Log activity for admin dashboard"""
+    global ACTIVITY_LOG
+    
+    from datetime import datetime
+    
+    activity = {
+        "time": datetime.now().strftime("%H:%M"),
+        "status": status,  # "success", "failed", "info"
+        "message": message
+    }
+    
+    ACTIVITY_LOG.insert(0, activity)
+    
+    # Keep only last 50 entries
+    if len(ACTIVITY_LOG) > MAX_ACTIVITY_LOG:
+        ACTIVITY_LOG = ACTIVITY_LOG[:MAX_ACTIVITY_LOG]
+
+def update_daily_stats(stat_type, value=1):
+    """Update daily statistics"""
+    global DAILY_STATS
+    
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Reset if new day
+    if DAILY_STATS["date"] != today:
+        DAILY_STATS = {
+            "date": today,
+            "downloads": 0,
+            "uploads": 0,
+            "failed": 0,
+            "total_bytes": 0,
+            "total_time": 0
+        }
+    
+    if stat_type in DAILY_STATS:
+        DAILY_STATS[stat_type] += value
 
 # ============================================================
 # PIKPAK CONFIGURATION
@@ -1104,6 +1157,11 @@ def worker_loop():
             JOBS[job_id]['completed'] = time.time()
             print(f"WORKER: ✅ Job {job_id} done!", flush=True)
             
+            log_activity("success", f"Uploaded: {data.get('filename', 'video.mp4')}")
+            update_daily_stats("uploads")
+            update_daily_stats("total_bytes", result.get('file_size', 0))
+            update_daily_stats("total_time", result.get('upload_time', 0))
+            
         except Exception as e:
             error_msg = str(e)
             print(f"WORKER ERROR: {error_msg}", flush=True)
@@ -1113,6 +1171,8 @@ def worker_loop():
             
             if job_id:
                 JOBS[job_id]['status'] = 'failed'
+                log_activity("failed", f"Upload failed: {error_msg[:50]}")
+                update_daily_stats("failed")
                 JOBS[job_id]['error'] = error_msg
                 JOBS[job_id]['failed'] = time.time()
         finally:
@@ -1134,6 +1194,164 @@ def ensure_worker_alive():
             WORKER_THREAD.start()
 
 # ============================================================
+# ADMIN DASHBOARD ROUTES
+# ============================================================
+
+@app.route('/admin')
+def admin_dashboard():
+    """Serve admin dashboard HTML"""
+    return render_template('admin.html')
+
+@app.route('/admin/api/status')
+def admin_api_status():
+    """Get complete admin dashboard data"""
+    from datetime import datetime
+    
+    # Get account status
+    tokens_data = load_pikpak_tokens()
+    usage = tokens_data.get("daily_usage", {})
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    accounts_list = []
+    total_remaining = 0
+    
+    for account in PIKPAK_ACCOUNTS:
+        account_key = f"account_{account['id']}"
+        account_usage = usage.get(account_key, {})
+        
+        if account_usage.get("date") != today:
+            downloads_today = 0
+        else:
+            downloads_today = account_usage.get("count", 0)
+        
+        remaining = 5 - downloads_today
+        total_remaining += remaining
+        
+        accounts_list.append({
+            "id": account["id"],
+            "email": account["email"],
+            "downloads_today": downloads_today,
+            "downloads_remaining": remaining,
+            "available": remaining > 0
+        })
+    
+    # Get sessions
+    sessions_list = []
+    current_time = time.time()
+    with SESSION_LOCK:
+        for session_id, session_data in MESSAGE_SESSIONS.items():
+            expires_in = int(session_data['timeout'] - current_time)
+            if expires_in > 0:
+                sessions_list.append({
+                    "id": session_id,
+                    "magnets": len(session_data.get('magnets', [])),
+                    "expires_in": f"{expires_in // 60}m {expires_in % 60}s"
+                })
+    
+    # Count jobs
+    completed = sum(1 for j in JOBS.values() if j.get('status') == 'done')
+    failed = sum(1 for j in JOBS.values() if j.get('status') == 'failed')
+    processing = sum(1 for j in JOBS.values() if j.get('status') == 'processing')
+    
+    # Format report data
+    avg_time = "0s"
+    total_data = "0 MB"
+    if DAILY_STATS["uploads"] > 0 and DAILY_STATS["total_time"] > 0:
+        avg_seconds = DAILY_STATS["total_time"] / DAILY_STATS["uploads"]
+        avg_time = f"{avg_seconds:.1f}s"
+    if DAILY_STATS["total_bytes"] > 0:
+        total_mb = DAILY_STATS["total_bytes"] / (1024 * 1024)
+        if total_mb > 1024:
+            total_data = f"{total_mb/1024:.1f} GB"
+        else:
+            total_data = f"{total_mb:.0f} MB"
+    
+    return jsonify({
+        "system": {
+            "status": "online",
+            "version": "2.0.0",
+            "queue": JOB_QUEUE.qsize(),
+            "completed": completed,
+            "failed": failed,
+            "processing": processing,
+            "sessions": len(sessions_list),
+            "emergency_stop": EMERGENCY_STOP,
+            "worker_alive": WORKER_THREAD.is_alive() if WORKER_THREAD else False
+        },
+        "accounts": {
+            "list": accounts_list,
+            "total_remaining": total_remaining
+        },
+        "sessions": sessions_list,
+        "report": {
+            "downloads": DAILY_STATS["downloads"],
+            "uploads": DAILY_STATS["uploads"],
+            "avg_time": avg_time,
+            "total_data": total_data
+        },
+        "activity": ACTIVITY_LOG[:20]
+    })
+
+@app.route('/admin/api/reset-quota/<int:account_id>', methods=['POST'])
+def admin_reset_quota(account_id):
+    """Reset quota for specific account"""
+    try:
+        tokens = load_pikpak_tokens()
+        
+        if "daily_usage" not in tokens:
+            tokens["daily_usage"] = {}
+        
+        account_key = f"account_{account_id}"
+        tokens["daily_usage"][account_key] = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "count": 0
+        }
+        
+        save_pikpak_tokens(tokens)
+        
+        log_activity("info", f"Account {account_id} quota reset manually")
+        
+        return jsonify({"success": True, "message": f"Account {account_id} quota reset"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/admin/api/test-magnet', methods=['POST'])
+def admin_test_magnet():
+    """Test magnet link without downloading"""
+    try:
+        magnet = request.json.get('magnet', '')
+        
+        if not magnet or not magnet.startswith('magnet:'):
+            return jsonify({"valid": False, "error": "Invalid magnet format"})
+        
+        # Extract name from magnet
+        name = "Unknown"
+        dn_match = re.search(r'dn=([^&]+)', magnet)
+        if dn_match:
+            name = dn_match.group(1)
+            name = name.replace('+', ' ').replace('%20', ' ')
+        
+        # Detect quality
+        quality = detect_quality_from_magnet(magnet) or "Unknown"
+        
+        # Find available account
+        available_account = None
+        try:
+            account = select_available_account()
+            available_account = account["id"]
+        except:
+            available_account = "None available"
+        
+        return jsonify({
+            "valid": True,
+            "name": name,
+            "quality": quality,
+            "account": available_account
+        })
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)})
+
+# ============================================================
 # FLASK ROUTES
 # ============================================================
 
@@ -1150,6 +1368,11 @@ def home():
         "pikpak_accounts": len(PIKPAK_ACCOUNTS),
         "worker_alive": WORKER_THREAD.is_alive() if WORKER_THREAD else False
     })
+
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files"""
+    return send_from_directory('static', filename)
 
 # ============================================================
 # SESSION ROUTES (unchanged)
@@ -1418,6 +1641,8 @@ def add_magnet():
             detected_quality = detect_quality(user_quality, magnet, file_size)
             
             print(f"PIKPAK: === ADD MAGNET SUCCESS ===", flush=True)
+            log_activity("success", f"Downloaded: {video_file.get('name', file_name)}")
+            update_daily_stats("downloads")
             print(f"PIKPAK: Quality detected: {detected_quality}", flush=True)
             
             # Return success response
