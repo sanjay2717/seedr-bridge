@@ -149,7 +149,62 @@ PIKPAK_ACCOUNTS = load_pikpak_accounts()
 PIKPAK_TOKENS_FILE = "/tmp/pikpak_tokens.json"
 PIKPAK_LOCK = threading.Lock()
 MAGNET_ADD_LOCK = threading.Lock()
+# ============================================================
+# STARTUP QUOTA CHECK (Add after load_pikpak_accounts)
+# ============================================================
 
+def check_all_accounts_quota():
+    """Check quota for all accounts on startup (doesn't consume quota)"""
+    print(f"PIKPAK [{SERVER_ID}]: Checking account quotas on startup...", flush=True)
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    tokens = load_pikpak_tokens()
+    
+    if "daily_usage" not in tokens:
+        tokens["daily_usage"] = {}
+    
+    for account in PIKPAK_ACCOUNTS:
+        try:
+            # Login to get current status
+            account_tokens = ensure_logged_in(account)
+            
+            # Get account info (doesn't consume quota)
+            device_id = account["device_id"]
+            user_id = account_tokens["user_id"]
+            access_token = account_tokens["access_token"]
+            
+            # Check VIP/quota status
+            captcha_sign, timestamp = generate_captcha_sign(device_id)
+            captcha_token = get_pikpak_captcha(
+                action="GET:/drive/v1/about",
+                device_id=device_id,
+                user_id=user_id,
+                captcha_sign=captcha_sign,
+                timestamp=timestamp
+            )
+            
+            url = f"{PIKPAK_API_DRIVE}/drive/v1/about"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "x-device-id": device_id,
+                "x-captcha-token": captcha_token
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            data = response.json()
+            
+            # Log account status
+            quota_used = data.get("quota", {}).get("usage", 0)
+            quota_limit = data.get("quota", {}).get("limit", 0)
+            
+            print(f"PIKPAK [{SERVER_ID}]: Account {account['id']} - Storage: {quota_used}/{quota_limit}", flush=True)
+            print(f"PIKPAK [{SERVER_ID}]: Account {account['id']} - Login successful ✅", flush=True)
+            
+        except Exception as e:
+            print(f"PIKPAK [{SERVER_ID}]: Account {account['id']} - Check failed: {e}", flush=True)
+    
+    save_pikpak_tokens(tokens)
+    print(f"PIKPAK [{SERVER_ID}]: Startup quota check complete", flush=True)
 # ============================================================
 # PIKPAK TOKEN STORAGE
 # ============================================================
@@ -839,7 +894,7 @@ class SmartStream(IOBase):
         self.response = self.session.get(
             url,
             stream=True,
-            timeout=(10, 600),
+            timeout=(10, 900),
             headers=HEADERS_STREAM
         )
         self.response.raise_for_status()
@@ -1942,5 +1997,6 @@ if __name__ == '__main__':
     print("🚀 PikPak-Telegram Bridge Starting", flush=True)
     print(f"📦 Loaded {len(PIKPAK_ACCOUNTS)} PikPak accounts", flush=True)
     print("=" * 50, flush=True)
+    check_all_accounts_quota() 
     ensure_worker_alive()
     app.run(host='0.0.0.0', port=10000)
