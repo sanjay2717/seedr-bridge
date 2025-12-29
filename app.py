@@ -17,6 +17,10 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 app = Flask(__name__)
 
+SERVER_ID = "primary"
+SERVER_MODE = os.environ.get("SERVER_MODE", "primary")
+SESSION_NAME = "bot_session_primary"
+SERVER_URL = "https://seedr-bridge.onrender.com"
 # --- CONFIGURATION ---
 API_ID = os.environ.get("TG_API_ID")
 API_HASH = os.environ.get("TG_API_HASH")
