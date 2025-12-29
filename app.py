@@ -148,6 +148,7 @@ def load_pikpak_accounts():
 PIKPAK_ACCOUNTS = load_pikpak_accounts()
 PIKPAK_TOKENS_FILE = "/tmp/pikpak_tokens.json"
 PIKPAK_LOCK = threading.Lock()
+MAGNET_ADD_LOCK = threading.Lock()
 
 # ============================================================
 # PIKPAK TOKEN STORAGE
@@ -1546,7 +1547,9 @@ def add_magnet():
     Smart retry - only retries on daily_limit error
     """
     global EMERGENCY_STOP
-    
+    # Add random delay to prevent simultaneous requests
+    import random
+    time.sleep(random.uniform(1, 3))
     magnet = request.json.get('magnet')
     user_quality = request.json.get('quality', 'auto')
     
