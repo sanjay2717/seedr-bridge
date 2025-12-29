@@ -484,17 +484,13 @@ def increment_account_usage(account_id):
 # ============================================================
 
 def pikpak_add_magnet(magnet_link, account, tokens):
-    """
-    Add magnet link to PikPak
-    Returns: task info with file_id (folder)
-    """
-    print(f"PIKPAK: Adding magnet to account {account['id']}", flush=True)
+    """Add magnet link to PikPak"""
+    print(f"PIKPAK [{SERVER_ID}]: Adding magnet to account {account['id']}", flush=True)
     
     device_id = account["device_id"]
     user_id = tokens["user_id"]
     access_token = tokens["access_token"]
     
-    # Get captcha for add magnet
     captcha_sign, timestamp = generate_captcha_sign(device_id)
     captcha_token = get_pikpak_captcha(
         action="POST:/drive/v1/files",
@@ -526,11 +522,48 @@ def pikpak_add_magnet(magnet_link, account, tokens):
     response = requests.post(url, headers=headers, json=body, timeout=30)
     data = response.json()
     
+    # Debug: Print full response
+    print(f"PIKPAK [{SERVER_ID}]: API Response keys: {data.keys()}", flush=True)
+    
+    # Check multiple possible response formats
     if "task" in data:
-        print(f"PIKPAK: ✅ Magnet added: {data['task'].get('file_name', 'Unknown')}", flush=True)
-        return data["task"]
+        task = data["task"]
+        file_id = task.get("file_id") or task.get("id") or ""
+        file_name = task.get("file_name") or task.get("name") or "Unknown"
+        print(f"PIKPAK [{SERVER_ID}]: ✅ Magnet added: {file_name} (file_id: {file_id})", flush=True)
+        
+        # Ensure file_id is in the response
+        task["file_id"] = file_id
+        task["file_name"] = file_name
+        return task
+    
+    elif "file" in data:
+        # Alternative response format
+        file_data = data["file"]
+        file_id = file_data.get("id") or file_data.get("file_id") or ""
+        file_name = file_data.get("name") or file_data.get("file_name") or "Unknown"
+        print(f"PIKPAK [{SERVER_ID}]: ✅ Magnet added (file format): {file_name} (file_id: {file_id})", flush=True)
+        
+        return {
+            "file_id": file_id,
+            "file_name": file_name,
+            **file_data
+        }
+    
+    elif "id" in data:
+        # Direct response format
+        file_id = data.get("id") or ""
+        file_name = data.get("name") or "Unknown"
+        print(f"PIKPAK [{SERVER_ID}]: ✅ Magnet added (direct format): {file_name} (file_id: {file_id})", flush=True)
+        
+        return {
+            "file_id": file_id,
+            "file_name": file_name,
+            **data
+        }
+    
     else:
-        print(f"PIKPAK: ❌ Add magnet failed: {data}", flush=True)
+        print(f"PIKPAK [{SERVER_ID}]: ❌ Add magnet failed: {data}", flush=True)
         raise Exception(f"Add magnet failed: {data.get('error', 'Unknown')}")
 
 def pikpak_poll_download(file_id, account, tokens, timeout=120):
