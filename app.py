@@ -1847,7 +1847,7 @@ def add_magnet():
                     "server": SERVER_ID
                 }), 400
             
-            pikpak_poll_download(folder_id, account, tokens, timeout=120)
+            pikpak_poll_download(folder_id, account, tokens, timeout=600)
             
             tokens = ensure_logged_in(account)
             
