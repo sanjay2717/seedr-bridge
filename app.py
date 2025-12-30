@@ -10,6 +10,7 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 from io import IOBase
+from urllib.parse import unquote
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from pyrogram import Client
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
@@ -1794,79 +1795,100 @@ def emergency_status():
 # PIKPAK ADD MAGNET ROUTE
 # ============================================================
 
+def get_magnet_name(magnet_link):
+    import re
+    from urllib.parse import unquote
+    match = re.search(r'dn=([^&]+)', magnet_link)
+    if match:
+        return unquote(match.group(1)).replace('+', ' ')
+    return None
+
+
 @app.route('/add-magnet', methods=['POST'])
 def add_magnet():
     """Add magnet to PikPak and return download link"""
     global EMERGENCY_STOP
-    # Add random delay to prevent simultaneous requests
-    import random
-    time.sleep(random.uniform(1, 3))
-    magnet = request.json.get('magnet')
-    user_quality = request.json.get('quality', 'auto')
-    
-    if not magnet:
-        return jsonify({"error": "Missing magnet parameter"}), 400
-    
-    exhausted_accounts = []
-    max_total_retries = 8
-    attempt = 0
-    last_account_id = None
-    
-    while attempt < max_total_retries:
-        attempt += 1
+    with MAGNET_ADD_LOCK:
+        # Add random delay to prevent simultaneous requests
+        import random
+        time.sleep(random.uniform(1, 3))
+        magnet = request.json.get('magnet')
+        user_quality = request.json.get('quality', 'auto')
         
-        if EMERGENCY_STOP:
-            print(f"🚨 [{SERVER_ID}] EMERGENCY STOP - Aborting magnet add", flush=True)
-            return jsonify({
-                "error": "Emergency stop activated",
-                "retry": False,
-                "server": SERVER_ID
-            }), 503
+        if not magnet:
+            return jsonify({"error": "Missing magnet parameter"}), 400
         
-        try:
-            print(f"PIKPAK [{SERVER_ID}]: === ADD MAGNET ATTEMPT {attempt}/{max_total_retries} ===", flush=True)
+        exhausted_accounts = []
+        max_total_retries = 8
+        attempt = 0
+        last_account_id = None
+        
+        while attempt < max_total_retries:
+            attempt += 1
             
-            account = select_available_account(exclude_accounts=exhausted_accounts)
-            last_account_id = account["id"]
-            
-            tokens = ensure_logged_in(account)
-            
-            task = pikpak_add_magnet(magnet, account, tokens)
-            folder_id = task.get("file_id")
-            file_name = task.get("file_name", "Unknown")
-            
-            if not folder_id or str(folder_id).strip() == "":
-                error_msg = "PikPak returned empty file_id - magnet may be invalid"
-                print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
-                print(f"PIKPAK [{SERVER_ID}]: ⚠️ STOPPING - No retry to save quota", flush=True)
-                
+            if EMERGENCY_STOP:
+                print(f"🚨 [{SERVER_ID}] EMERGENCY STOP - Aborting magnet add", flush=True)
                 return jsonify({
-                    "error": error_msg,
+                    "error": "Emergency stop activated",
                     "retry": False,
-                    "account_used": account["id"],
                     "server": SERVER_ID
-                }), 400
+                }), 503
             
-            pikpak_poll_download(folder_id, account, tokens, timeout=600)
-            
-            tokens = ensure_logged_in(account)
-            
-            file_info = pikpak_get_file_info(folder_id, account, tokens)
-            kind = file_info.get("kind", "")
-            
-            print(f"PIKPAK [{SERVER_ID}]: File kind: {kind}", flush=True)
-            
-            video_file = None
-            download_url = None
-            
-            if kind == "drive#folder":
-                print(f"PIKPAK [{SERVER_ID}]: Detected FOLDER, listing contents...", flush=True)
-                files = pikpak_list_files(folder_id, account, tokens)
+            try:
+                print(f"PIKPAK [{SERVER_ID}]: === ADD MAGNET ATTEMPT {attempt}/{max_total_retries} ===", flush=True)
                 
-                video_file = find_video_file(files)
-                if not video_file:
-                    error_msg = "No video file found in folder"
+                # 1. Get magnet name
+                magnet_name = get_magnet_name(magnet)
+                print(f"PIKPAK [{SERVER_ID}]: Checking for existing file: {magnet_name}", flush=True)
+
+                # 2. Select account (same logic as before)
+                account = select_available_account(exclude_accounts=exhausted_accounts)
+                last_account_id = account["id"]
+                tokens = ensure_logged_in(account)
+
+                # 3. Check for existing file
+                if magnet_name:
+                    try:
+                        # List root files
+                        files = pikpak_list_files(None, account, tokens) # None means root
+                        
+                        for file in files:
+                            # Exact match check
+                            if file['name'] == magnet_name:
+                                print(f"PIKPAK [{SERVER_ID}]: ✅ Found existing file: {magnet_name}", flush=True)
+                                
+                                # Get download link
+                                download_url = pikpak_get_download_link(file['id'], account, tokens)
+                                file_size = int(file.get('size', 0))
+                                
+                                # Detect quality
+                                detected_quality = detect_quality(user_quality, magnet, file_size)
+                                
+                                return jsonify({
+                                    "result": True,
+                                    "folder_id": file['id'], # Use file_id as folder_id
+                                    "file_id": file['id'],
+                                    "file_name": file['name'],
+                                    "file_size": file_size,
+                                    "url": download_url,
+                                    "account_used": account["id"],
+                                    "file_type": "file",
+                                    "quality_detected": detected_quality,
+                                    "server": SERVER_ID,
+                                    "quota_saved": True
+                                })
+                    except Exception as e:
+                        print(f"PIKPAK [{SERVER_ID}]: Check existing failed (continuing): {e}", flush=True)
+
+                # 4. Proceed with normal download if not found...
+                task = pikpak_add_magnet(magnet, account, tokens)
+                folder_id = task.get("file_id")
+                file_name = task.get("file_name", "Unknown")
+                
+                if not folder_id or str(folder_id).strip() == "":
+                    error_msg = "PikPak returned empty file_id - magnet may be invalid"
                     print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
+                    print(f"PIKPAK [{SERVER_ID}]: ⚠️ STOPPING - No retry to save quota", flush=True)
                     
                     return jsonify({
                         "error": error_msg,
@@ -1874,15 +1896,64 @@ def add_magnet():
                         "account_used": account["id"],
                         "server": SERVER_ID
                     }), 400
+                
+                pikpak_poll_download(folder_id, account, tokens, timeout=600)
                 
                 tokens = ensure_logged_in(account)
-                download_url = pikpak_get_download_link(video_file["id"], account, tokens)
                 
-            else:
-                print(f"PIKPAK [{SERVER_ID}]: Detected SINGLE FILE", flush=True)
+                file_info = pikpak_get_file_info(folder_id, account, tokens)
+                kind = file_info.get("kind", "")
                 
-                if not is_video_file(file_info):
-                    error_msg = "Downloaded file is not a video"
+                print(f"PIKPAK [{SERVER_ID}]: File kind: {kind}", flush=True)
+                
+                video_file = None
+                download_url = None
+                
+                if kind == "drive#folder":
+                    print(f"PIKPAK [{SERVER_ID}]: Detected FOLDER, listing contents...", flush=True)
+                    files = pikpak_list_files(folder_id, account, tokens)
+                    
+                    video_file = find_video_file(files)
+                    if not video_file:
+                        error_msg = "No video file found in folder"
+                        print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
+                        
+                        return jsonify({
+                            "error": error_msg,
+                            "retry": False,
+                            "account_used": account["id"],
+                            "server": SERVER_ID
+                        }), 400
+                    
+                    tokens = ensure_logged_in(account)
+                    download_url = pikpak_get_download_link(video_file["id"], account, tokens)
+                    
+                else:
+                    print(f"PIKPAK [{SERVER_ID}]: Detected SINGLE FILE", flush=True)
+                    
+                    if not is_video_file(file_info):
+                        error_msg = "Downloaded file is not a video"
+                        print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
+                        
+                        return jsonify({
+                            "error": error_msg,
+                            "retry": False,
+                            "account_used": account["id"],
+                            "server": SERVER_ID
+                        }), 400
+                    
+                    video_file = file_info
+                    download_url = file_info.get("web_content_link", "")
+                    
+                    if not download_url:
+                        tokens = ensure_logged_in(account)
+                        download_url = pikpak_get_download_link(folder_id, account, tokens)
+                
+                file_size = int(video_file.get("size", 0))
+                file_size_mb = file_size / 1024 / 1024
+                
+                if file_size_mb > 2048:
+                    error_msg = f"File too large: {file_size_mb:.0f}MB (max 2048MB)"
                     print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
                     
                     return jsonify({
@@ -1892,75 +1963,65 @@ def add_magnet():
                         "server": SERVER_ID
                     }), 400
                 
-                video_file = file_info
-                download_url = file_info.get("web_content_link", "")
+                increment_account_usage(account["id"])
                 
-                if not download_url:
-                    tokens = ensure_logged_in(account)
-                    download_url = pikpak_get_download_link(folder_id, account, tokens)
-            
-            file_size = int(video_file.get("size", 0))
-            file_size_mb = file_size / 1024 / 1024
-            
-            if file_size_mb > 2048:
-                error_msg = f"File too large: {file_size_mb:.0f}MB (max 2048MB)"
-                print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
+                detected_quality = detect_quality(user_quality, magnet, file_size)
+                
+                print(f"PIKPAK [{SERVER_ID}]: === ADD MAGNET SUCCESS ===", flush=True)
+                log_activity("success", f"Downloaded: {video_file.get('name', file_name)}")
+                update_daily_stats("downloads")
+                print(f"PIKPAK [{SERVER_ID}]: Quality detected: {detected_quality}", flush=True)
                 
                 return jsonify({
-                    "error": error_msg,
-                    "retry": False,
+                    "result": True,
+                    "folder_id": folder_id,
+                    "file_id": video_file.get("id", folder_id),
+                    "file_name": video_file.get("name", file_name),
+                    "file_size": file_size,
+                    "url": download_url,
                     "account_used": account["id"],
+                    "file_type": "folder" if kind == "drive#folder" else "file",
+                    "quality_detected": detected_quality,
                     "server": SERVER_ID
-                }), 400
-            
-            increment_account_usage(account["id"])
-            
-            detected_quality = detect_quality(user_quality, magnet, file_size)
-            
-            print(f"PIKPAK [{SERVER_ID}]: === ADD MAGNET SUCCESS ===", flush=True)
-            log_activity("success", f"Downloaded: {video_file.get('name', file_name)}")
-            update_daily_stats("downloads")
-            print(f"PIKPAK [{SERVER_ID}]: Quality detected: {detected_quality}", flush=True)
-            
-            return jsonify({
-                "result": True,
-                "folder_id": folder_id,
-                "file_id": video_file.get("id", folder_id),
-                "file_name": video_file.get("name", file_name),
-                "file_size": file_size,
-                "url": download_url,
-                "account_used": account["id"],
-                "file_type": "folder" if kind == "drive#folder" else "file",
-                "quality_detected": detected_quality,
-                "server": SERVER_ID
-            })
-            
-        except Exception as e:
-            error_msg = str(e)
-            print(f"PIKPAK [{SERVER_ID}]: Error on attempt {attempt}: {error_msg}", flush=True)
-            
-            if "task_daily_create_limit" in error_msg:
-                print(f"PIKPAK [{SERVER_ID}]: ⚠️ Account {account['id']} hit daily limit!", flush=True)
-                mark_account_exhausted(account["id"])
-                exhausted_accounts.append(account["id"])
-                print(f"PIKPAK [{SERVER_ID}]: 🔄 Rotating to next account...", flush=True)
-                continue
-            
-            if "All PikPak accounts exhausted" in error_msg:
-                return jsonify({"error": error_msg, "retry": False, "server": SERVER_ID}), 500
-            
-            if attempt >= 3:
-                print(f"PIKPAK [{SERVER_ID}]: ❌ Max retries reached, stopping", flush=True)
-                return jsonify({
-                    "error": error_msg,
-                    "retry": False,
-                    "attempts": attempt,
-                    "account_used": last_account_id,
-                    "server": SERVER_ID
-                }), 500
-            
-            print(f"PIKPAK [{SERVER_ID}]: Retrying in 5 seconds...", flush=True)
-            time.sleep(5)
+                })
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"PIKPAK [{SERVER_ID}]: Error on attempt {attempt}: {error_msg}", flush=True)
+                
+                if "task_daily_create_limit" in error_msg:
+                    print(f"PIKPAK [{SERVER_ID}]: ⚠️ Account {last_account_id} hit daily limit!", flush=True)
+                    if last_account_id:
+                        mark_account_exhausted(last_account_id)
+                        exhausted_accounts.append(last_account_id)
+                    print(f"PIKPAK [{SERVER_ID}]: 🔄 Rotating to next account...", flush=True)
+                    continue
+                
+                if "All PikPak accounts exhausted" in error_msg:
+                    return jsonify({"error": error_msg, "retry": False, "server": SERVER_ID}), 500
+                
+                if "Read timed out" in error_msg or "Download timeout" in error_msg:
+                     print(f"PIKPAK [{SERVER_ID}]: ❌ Timeout error, stopping", flush=True)
+                     return jsonify({
+                        "error": error_msg,
+                        "retry": False,
+                        "attempts": attempt,
+                        "account_used": last_account_id,
+                        "server": SERVER_ID
+                    }), 500
+
+                if attempt >= 3:
+                    print(f"PIKPAK [{SERVER_ID}]: ❌ Max retries reached, stopping", flush=True)
+                    return jsonify({
+                        "error": error_msg,
+                        "retry": False,
+                        "attempts": attempt,
+                        "account_used": last_account_id,
+                        "server": SERVER_ID
+                    }), 500
+                
+                print(f"PIKPAK [{SERVER_ID}]: Retrying in 5 seconds...", flush=True)
+                time.sleep(5)
     
     return jsonify({"error": "Max retries exceeded", "retry": False, "server": SERVER_ID}), 500
 
