@@ -786,7 +786,8 @@ def pikpak_list_files(parent_id, account, tokens):
     
     params = {
         "parent_id": parent_id,
-        "limit": 100
+        "limit": 100,
+        "filters": '{"trashed":{"eq":false}}'
     }
     
     response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -2115,6 +2116,8 @@ def add_magnet():
                 
             except Exception as e:
                 error_msg = str(e)
+                if "Emergency stop" in error_msg:
+                    return jsonify({"error": error_msg, "retry": False}), 503
                 print(f"PIKPAK [{SERVER_ID}]: Error on attempt {attempt}: {error_msg}", flush=True)
                 
                 if "task_daily_create_limit" in error_msg:
