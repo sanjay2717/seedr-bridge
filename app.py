@@ -19,7 +19,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 app = Flask(__name__)
 
 # ============================================================
-# SERVER IDENTIFICATION (NEW)
+# SERVER IDENTIFICATION
 # ============================================================
 SERVER_ID = "primary"
 SERVER_MODE = os.environ.get("SERVER_MODE", "primary")
@@ -51,7 +51,7 @@ EMERGENCY_STOP = False
 MESSAGE_SESSIONS = {}
 SESSION_LOCK = threading.Lock()
 
-# Activity log storage (in memory)
+# Activity log storage
 ACTIVITY_LOG = []
 MAX_ACTIVITY_LOG = 50
 
@@ -136,11 +136,6 @@ PIKPAK_SALTS = [
     "NhXXU9rg4XXdzo7u5o"
 ]
 
-# ============================================================
-# PIKPAK ACCOUNT LOADING (REMOVED - Using DB)
-# ============================================================
-# This section is now handled by SupabaseDB
-
 PIKPAK_TOKENS_FILE = f"/tmp/pikpak_tokens_{SERVER_ID}.json"
 PIKPAK_LOCK = threading.Lock()
 MAGNET_ADD_LOCK = threading.Lock()
@@ -205,10 +200,6 @@ def get_account_storage(account):
         print(f"PIKPAK [{SERVER_ID}]: Storage check failed for account {account_id}: {e}", flush=True)
         return {"used_gb": 0, "total_gb": 6, "percent": 0}
 
-# ============================================================
-# STARTUP QUOTA CHECK (Add after load_pikpak_accounts)
-# ============================================================
-
 def check_all_accounts_quota():
     """Check quota for all accounts on startup using the DB"""
     print(f"PIKPAK [{SERVER_ID}]: Checking account quotas on startup...", flush=True)
@@ -237,9 +228,6 @@ def check_all_accounts_quota():
         print(f"PIKPAK [{SERVER_ID}]: Failed to fetch accounts from DB for startup check: {e}", flush=True)
 
     print(f"PIKPAK [{SERVER_ID}]: Startup quota check complete", flush=True)
-# ============================================================
-# PIKPAK TOKEN STORAGE
-# ============================================================
 
 def load_pikpak_tokens():
     """Load tokens from file"""
@@ -268,10 +256,6 @@ def set_account_tokens(account_id, token_data):
     tokens[f"account_{account_id}"] = token_data
     save_pikpak_tokens(tokens)
 
-# ============================================================
-# PIKPAK CAPTCHA SIGN GENERATION
-# ============================================================
-
 def generate_captcha_sign(device_id):
     """Generate PikPak captcha_sign using MD5 + 15 salts"""
     timestamp = str(int(time.time() * 1000))
@@ -291,45 +275,6 @@ def generate_captcha_sign(device_id):
     captcha_sign = "1." + result
     
     return captcha_sign, timestamp
-
-# ============================================================
-# PIKPAK STORAGE HELPER
-# ============================================================
-
-def get_pikpak_storage_info(account, tokens):
-    """Get storage info for account"""
-    device_id = account["device_id"]
-    user_id = tokens["user_id"]
-    access_token = tokens["access_token"]
-    
-    captcha_sign, timestamp = generate_captcha_sign(device_id)
-    captcha_token = get_pikpak_captcha(
-        action="GET:/drive/v1/about",
-        device_id=device_id,
-        user_id=user_id,
-        captcha_sign=captcha_sign,
-        timestamp=timestamp
-    )
-    
-    url = f"{PIKPAK_API_DRIVE}/drive/v1/about"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "x-device-id": device_id,
-        "x-captcha-token": captcha_token
-    }
-    
-    response = requests.get(url, headers=headers, timeout=30)
-    data = response.json()
-    
-    quota = data.get("quota", {})
-    return {
-        "usage": int(quota.get("usage", 0)),
-        "limit": int(quota.get("limit", 0))
-    }
-
-# ============================================================
-# PIKPAK API HELPERS
-# ============================================================
 
 def get_pikpak_captcha(action, device_id, user_id=None, captcha_sign=None, timestamp=None, username=None):
     """Get captcha token for PikPak API operation"""
@@ -561,43 +506,25 @@ def pikpak_add_magnet(magnet_link, account, tokens):
     # Debug: Print full response
     print(f"PIKPAK [{SERVER_ID}]: API Response keys: {data.keys()}", flush=True)
     
-    # Check multiple possible response formats
     if "task" in data:
         task = data["task"]
         file_id = task.get("file_id") or task.get("id") or ""
         file_name = task.get("file_name") or task.get("name") or "Unknown"
         print(f"PIKPAK [{SERVER_ID}]: ✅ Magnet added: {file_name} (file_id: {file_id})", flush=True)
-        
-        # Ensure file_id is in the response
         task["file_id"] = file_id
         task["file_name"] = file_name
         return task
-    
     elif "file" in data:
-        # Alternative response format
         file_data = data["file"]
         file_id = file_data.get("id") or file_data.get("file_id") or ""
         file_name = file_data.get("name") or file_data.get("file_name") or "Unknown"
         print(f"PIKPAK [{SERVER_ID}]: ✅ Magnet added (file format): {file_name} (file_id: {file_id})", flush=True)
-        
-        return {
-            "file_id": file_id,
-            "file_name": file_name,
-            **file_data
-        }
-    
+        return {"file_id": file_id, "file_name": file_name, **file_data}
     elif "id" in data:
-        # Direct response format
         file_id = data.get("id") or ""
         file_name = data.get("name") or "Unknown"
         print(f"PIKPAK [{SERVER_ID}]: ✅ Magnet added (direct format): {file_name} (file_id: {file_id})", flush=True)
-        
-        return {
-            "file_id": file_id,
-            "file_name": file_name,
-            **data
-        }
-    
+        return {"file_id": file_id, "file_name": file_name, **data}
     else:
         print(f"PIKPAK [{SERVER_ID}]: ❌ Add magnet failed: {data}", flush=True)
         raise Exception(f"Add magnet failed: {data.get('error', 'Unknown')}")
@@ -838,6 +765,7 @@ def pikpak_delete_file(file_id, account, tokens):
         print(f"PIKPAK [{SERVER_ID}]: ⚠️ Trash not emptied (continuing anyway): {e}", flush=True)
     
     return True
+
 # ============================================================
 # SMART STREAMER
 # ============================================================
@@ -1035,7 +963,7 @@ def detect_quality_from_size(size_bytes):
         return None
 
 # ============================================================
-# ASYNC UPLOAD LOGIC (MODIFIED - Uses SESSION_NAME)
+# ASYNC UPLOAD LOGIC
 # ============================================================
 
 async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=0):
@@ -1066,7 +994,7 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
     while retry_count < max_retries:
         try:
             async with Client(
-                SESSION_NAME,  # MODIFIED: Use SERVER-SPECIFIC session name
+                SESSION_NAME,
                 api_id=API_ID,
                 api_hash=API_HASH,
                 bot_token=BOT_TOKEN,
@@ -1103,8 +1031,8 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
                         file_name=filename,
                         force_document=True,
                         progress=progress_callback,
-                        parse_mode=enums.ParseMode.HTML,  # NEW: Enable HTML
-                        thumb="thumbnail.jpg" if os.path.exists("thumbnail.jpg") else None  # NEW: Local Thumb
+                        parse_mode=enums.ParseMode.HTML,
+                        thumb="thumbnail.jpg" if os.path.exists("thumbnail.jpg") else None
                     )
 
                     elapsed = time.time() - start_time
@@ -1269,7 +1197,6 @@ def admin_dashboard():
 def admin_get_storage(account_id):
     """Get storage usage for a specific account from DB"""
     try:
-        # This is inefficient, a dedicated DB function would be better
         all_accounts = db.get_all_server_accounts(DB_SERVER_ID)
         account = next((acc for acc in all_accounts if acc['id'] == account_id), None)
         
@@ -1340,12 +1267,10 @@ def admin_clear_mypack(account_id):
         print(f"PIKPAK [{SERVER_ID}]: Clearing My Pack for account {account_id}", flush=True)
         tokens = ensure_logged_in(account)
         
-        # List files in root
         files = pikpak_list_files("root", account, tokens)
         deleted_count = len(files)
         
         if files:
-            # Batch trash
             device_id = account["device_id"]
             captcha_sign, timestamp = generate_captcha_sign(device_id)
             captcha_token = get_pikpak_captcha(
@@ -1366,7 +1291,6 @@ def admin_clear_mypack(account_id):
             body = {"ids": [f["id"] for f in files]}
             requests.post(url, headers=headers, json=body, timeout=30)
             
-            # Empty trash
             admin_clear_trash(account_id)
         
         return jsonify({"success": True, "message": "My Pack cleared", "files_deleted": deleted_count})
@@ -1382,7 +1306,6 @@ def admin_clear_all_trash():
         all_accounts = db.get_all_server_accounts(DB_SERVER_ID)
         for account in all_accounts:
             try:
-                # Re-route to the single-account function
                 response = admin_clear_trash(account["id"])
                 if response.json.get("success"):
                     count += 1
@@ -1420,7 +1343,6 @@ def admin_api_status():
         db_accounts = db.get_all_server_accounts(DB_SERVER_ID)
         
         for account in db_accounts:
-            # Map device ID for compatibility with helper functions
             account['device_id'] = account.get('current_device_id')
             
             downloads_today = account.get('quota_used', 0)
@@ -1517,363 +1439,8 @@ def admin_reset_quota(account_id):
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-
-
 # ============================================================
-# FLASK ROUTES (MODIFIED - Added server info)
-# ============================================================
-
-
-
-
-# ============================================================
-# SESSION ROUTES
-# ============================================================
-
-@app.route('/start-session', methods=['POST'])
-def start_session():
-    """Start message collection session"""
-    data = request.json
-    poster_msg_id = str(data.get('poster_message_id'))
-    
-    with SESSION_LOCK:
-        MESSAGE_SESSIONS[poster_msg_id] = {
-            'created': time.time(),
-            'timeout': time.time() + 300,
-            'metadata': data.get('metadata', {}),
-            'magnets': [],
-            'status': 'collecting'
-        }
-    
-    print(f"SESSION [{SERVER_ID}]: Started \"{poster_msg_id}\"", flush=True)
-    return jsonify({"status": "session_started", "poster_msg_id": poster_msg_id, "server": SERVER_ID})
-
-@app.route('/add-magnet-to-session', methods=['POST'])
-def add_magnet_to_session():
-    """Add magnet to session"""
-    data = request.json
-    poster_msg_id = str(data.get('poster_message_id'))
-    magnet = data.get('magnet')
-    
-    with SESSION_LOCK:
-        if poster_msg_id not in MESSAGE_SESSIONS:
-            print(f"SESSION [{SERVER_ID}] ERROR: \"{poster_msg_id}\" not found.", flush=True)
-            return jsonify({"error": "Session not found", "session_id": poster_msg_id}), 404
-        
-        session = MESSAGE_SESSIONS[poster_msg_id]
-        
-        if time.time() > session['timeout']:
-            del MESSAGE_SESSIONS[poster_msg_id]
-            return jsonify({"error": "timeout"}), 408
-        
-        if len(session['magnets']) >= 3:
-            return jsonify({"error": "max_magnets"}), 400
-        
-        session['magnets'].append(magnet)
-        print(f"SESSION [{SERVER_ID}]: Added magnet {len(session['magnets'])}/3", flush=True)
-    
-    return jsonify({"status": "magnet_added", "count": len(session['magnets']), "server": SERVER_ID})
-
-@app.route('/get-session/<poster_msg_id>', methods=['GET'])
-def get_session(poster_msg_id):
-    """Get session data"""
-    poster_msg_id = str(poster_msg_id)
-    
-    with SESSION_LOCK:
-        if poster_msg_id not in MESSAGE_SESSIONS:
-            return jsonify({"error": "Session not found"}), 404
-        
-        session = MESSAGE_SESSIONS[poster_msg_id]
-        
-        if time.time() > session['timeout']:
-            del MESSAGE_SESSIONS[poster_msg_id]
-            return jsonify({"error": "timeout"}), 408
-        
-        return jsonify({**session, "server": SERVER_ID})
-
-@app.route('/complete-session', methods=['POST'])
-def complete_session():
-    """Mark session as complete"""
-    data = request.json
-    poster_msg_id = str(data.get('poster_message_id'))
-    
-    with SESSION_LOCK:
-        if poster_msg_id not in MESSAGE_SESSIONS:
-            return jsonify({"error": "Session not found"}), 404
-        
-        session = MESSAGE_SESSIONS[poster_msg_id]
-        
-        if len(session['magnets']) < 1:
-            return jsonify({"error": "no_magnets"}), 400
-        
-        result = {
-            'metadata': session['metadata'],
-            'magnets': session['magnets'],
-            'count': len(session['magnets']),
-            'server': SERVER_ID
-        }
-        
-        del MESSAGE_SESSIONS[poster_msg_id]
-        print(f"SESSION [{SERVER_ID}]: Completed with {len(session['magnets'])} magnets", flush=True)
-        
-        return jsonify(result)
-
-@app.route('/debug/sessions', methods=['GET'])
-def debug_sessions():
-    """Debug: Show all active sessions"""
-    with SESSION_LOCK:
-        return jsonify({
-            "server": SERVER_ID,
-            "active_sessions": list(MESSAGE_SESSIONS.keys()),
-            "session_data": {k: {
-                "magnets": len(v['magnets']),
-                "time_left": int(v['timeout'] - time.time())
-            } for k, v in MESSAGE_SESSIONS.items()}
-        })
-
-# ============================================================
-# EMERGENCY STOP FLAG
-# ============================================================
-
-@app.route('/emergency-stop', methods=['POST'])
-def emergency_stop():
-    """Emergency stop all PikPak operations"""
-    global EMERGENCY_STOP
-    EMERGENCY_STOP = True
-    print(f"🚨 [{SERVER_ID}] EMERGENCY STOP ACTIVATED!", flush=True)
-    return jsonify({"status": "stopped", "message": "Emergency stop activated", "server": SERVER_ID})
-
-@app.route('/emergency-resume', methods=['POST'])
-def emergency_resume():
-    """Resume PikPak operations"""
-    global EMERGENCY_STOP
-    EMERGENCY_STOP = False
-    print(f"✅ [{SERVER_ID}] EMERGENCY STOP DEACTIVATED - Resumed", flush=True)
-    return jsonify({"status": "resumed", "message": "Operations resumed", "server": SERVER_ID})
-
-@app.route('/emergency-status', methods=['GET'])
-def emergency_status():
-    """Check emergency stop status"""
-    return jsonify({"emergency_stop": EMERGENCY_STOP, "server": SERVER_ID})
-
-# ============================================================
-# PIKPAK ADD MAGNET ROUTE
-# ============================================================
-
-def get_magnet_name(magnet_link):
-    """DEPRECATED: Use extract_magnet_info instead."""
-    import re
-    from urllib.parse import unquote
-    match = re.search(r'dn=([^&]+)', magnet_link)
-    if match:
-        return unquote(match.group(1)).replace('+', ' ')
-    return None
-
-def extract_magnet_info(magnet_link):
-    """Extracts name and BTIH hash from a magnet link."""
-    import re
-    from urllib.parse import unquote
-    
-    name_match = re.search(r'dn=([^&]+)', magnet_link)
-    name = unquote(name_match.group(1)).replace('+', ' ') if name_match else None
-    
-    hash_match = re.search(r'xt=urn:btih:([^&]+)', magnet_link, re.IGNORECASE)
-    btih_hash = hash_match.group(1).lower() if hash_match else None
-    
-    return {"name": name, "hash": btih_hash}
-
-def extract_hash(magnet_link):
-    """Extracts the BTIH hash from a magnet link and normalizes it."""
-    match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet_link, re.IGNORECASE)
-    if match:
-        return match.group(1).upper()
-    return None
-
-def normalize_name(name):
-    """Normalizes a name for fuzzy matching by lowercasing and removing symbols."""
-    if not name:
-        return ""
-    # Lowercase, remove non-alphanumeric chars (except spaces), and collapse whitespace
-    return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', name.lower())).strip()
-
-def check_duplicate(magnet_link, account, tokens, user_quality):
-    """
-    DEPRECATED: This function uses fuzzy name matching which is less reliable.
-    Use check_duplicate_by_hash for a more robust check.
-    """
-    try:
-        print(f"PIKPAK [{SERVER_ID}]: Running smart duplicate check...", flush=True)
-        magnet_info = extract_magnet_info(magnet_link)
-        
-        if not magnet_info["name"] or not magnet_info["hash"]:
-            print(f"PIKPAK [{SERVER_ID}]: Could not extract sufficient info from magnet for duplicate check.", flush=True)
-            return None
-            
-        normalized_magnet_name = normalize_name(magnet_info["name"])
-        print(f"PIKPAK [{SERVER_ID}]: Normalized magnet name: '{normalized_magnet_name}' | Hash: '{magnet_info['hash'][:10]}...'", flush=True)
-
-        # List files in the root directory (My Pack)
-        files = pikpak_list_files(None, account, tokens) # None means root
-        print(f"PIKPAK [{SERVER_ID}]: Found {len(files)} files in 'My Pack'. Starting comparison.", flush=True)
-
-        for file in files:
-            file_name = file.get('name')
-            normalized_file_name = normalize_name(file_name)
-
-            # 1. Fuzzy Name Matching
-            if normalized_file_name == normalized_magnet_name:
-                print(f"PIKPAK [{SERVER_ID}]: Fuzzy name match found: '{file_name}' (ID: {file['id']}). Verifying hash...", flush=True)
-                
-                # 2. Verify with hash
-                try:
-                    file_info = pikpak_get_file_info(file['id'], account, tokens)
-                    params_url = file_info.get("params", {}).get("url", "")
-                    
-                    if magnet_info["hash"] in params_url.lower():
-                        print(f"PIKPAK [{SERVER_ID}]: ✅ Found duplicate! Hash matches. File ID: {file['id']}", flush=True)
-                        log_activity("info", f"Found duplicate: {file_name}")
-                        
-                        # We have a confirmed duplicate, prepare the response
-                        download_url = pikpak_get_download_link(file['id'], account, tokens)
-                        file_size = int(file.get('size', 0))
-                        detected_quality = detect_quality(user_quality, magnet_link, file_size)
-                        
-                        return {
-                           "result": True,
-                           "folder_id": file['id'],
-                           "file_id": file['id'],
-                           "file_name": file['name'],
-                           "file_size": file_size,
-                           "url": download_url,
-                           "account_used": account["id"],
-                           "file_type": "file",
-                           "quality_detected": detected_quality,
-                           "server": SERVER_ID,
-                           "quota_saved": True
-                        }
-                except Exception as e:
-                    print(f"PIKPAK [{SERVER_ID}]: Verification failed for candidate '{file_name}': {e}", flush=True)
-                    continue # Try next file
-        
-        print(f"PIKPAK [{SERVER_ID}]: No duplicate found after checking all files.", flush=True)
-        return None
-
-    except Exception as e:
-        print(f"PIKPAK [{SERVER_ID}]: Smart duplicate check failed (continuing): {e}", flush=True)
-        return None
-
-def check_duplicate_by_hash(magnet_link, account, tokens, user_quality):
-    """
-    Checks for duplicates by BTIH hash against ALL files in the root directory.
-    Returns file info dictionary if a duplicate is found, otherwise None.
-    """
-    try:
-        print(f"PIKPAK [{SERVER_ID}]: Running robust duplicate check by hash...", flush=True)
-        input_hash = extract_hash(magnet_link)
-        
-        if not input_hash:
-            print(f"PIKPAK [{SERVER_ID}]: Could not extract hash from magnet link.", flush=True)
-            return None
-            
-        print(f"PIKPAK [{SERVER_ID}]: Input hash: '{input_hash}'", flush=True)
-
-        # List files in the target directory (My Pack)
-        target_folder = account.get("my_pack_id") or None
-        print(f"PIKPAK [{SERVER_ID}]: Listing files in folder: {target_folder or 'Root'}", flush=True)
-        files = pikpak_list_files(target_folder, account, tokens)
-        print(f"PIKPAK [{SERVER_ID}]: Found {len(files)} files in 'My Pack'. Starting hash comparison.", flush=True)
-
-        for file in files:
-            file_name = file.get('name', 'Unknown')
-            try:
-                # Get detailed file info to check the hash
-                file_info = pikpak_get_file_info(file['id'], account, tokens)
-                params_url = file_info.get("params", {}).get("url", "")
-                
-                # Check if the normalized hash from the magnet is in the file's metadata URL
-                is_match = input_hash in params_url.upper()
-                print(f"PIKPAK [{SERVER_ID}]: Checking file '{file_name}': Hash match? {is_match}", flush=True)
-                
-                if is_match:
-                    print(f"PIKPAK [{SERVER_ID}]: ✅ Quota Saved! Found existing file by hash: '{file_name}' (ID: {file['id']})", flush=True)
-                    log_activity("info", f"Found duplicate by hash: {file_name}")
-                    
-                    # Prepare response for the found duplicate
-                    download_url = pikpak_get_download_link(file['id'], account, tokens)
-                    file_size = int(file.get('size', 0))
-                    detected_quality = detect_quality(user_quality, magnet_link, file_size)
-                    
-                    return {
-                       "result": True,
-                       "folder_id": file['id'],
-                       "file_id": file['id'],
-                       "file_name": file['name'],
-                       "file_size": file_size,
-                       "url": download_url,
-                       "account_used": account["id"],
-                       "file_type": "file",
-                       "quality_detected": detected_quality,
-                       "server": SERVER_ID,
-                       "quota_saved": True
-                    }
-            except Exception as e:
-                print(f"PIKPAK [{SERVER_ID}]: Could not verify hash for file '{file_name}' (ID: {file['id']}): {e}", flush=True)
-                continue # Move to the next file
-        
-        print(f"PIKPAK [{SERVER_ID}]: No hash match found after checking all files.", flush=True)
-        return None
-
-    except Exception as e:
-        print(f"PIKPAK [{SERVER_ID}]: Robust duplicate check failed: {e}", flush=True)
-        return None
-
-
-    
-    return jsonify({"error": "Max retries exceeded after loop", "retry": False, "server": SERVER_ID}), 500
-
-@app.route('/admin/api/test-magnet', methods=['POST'])
-def admin_test_magnet():
-    """Test magnet link without downloading"""
-    try:
-        magnet = request.json.get('magnet', '').strip()
-        
-        if not magnet:
-            return jsonify({"valid": False, "error": "No magnet provided"})
-        
-        original_magnet = magnet
-        if '-magnet:' in magnet:
-            parts = magnet.split('-', 1)
-            if len(parts) == 2:
-                magnet = parts[1]
-        
-        if not magnet.startswith('magnet:?'):
-            return jsonify({"valid": False, "error": "Invalid magnet format. Must start with 'magnet:?'"})
-        
-        name = "Unknown"
-        dn_match = re.search(r'dn=([^&]+)', magnet)
-        if dn_match:
-            name = dn_match.group(1).replace('+', ' ').replace('%20', ' ').replace('%28', '(').replace('%29', ')')
-
-        available_account = "None available"
-        try:
-            account = get_best_account()
-            available_account = account["id"]
-        except Exception as e:
-            available_account = f"Error: {e}"
-
-        return jsonify({
-            "valid": True,
-            "name": name,
-            "quality": "auto",
-            "account": available_account,
-            "server": SERVER_ID
-        })
-        
-    except Exception as e:
-        return jsonify({"valid": False, "error": str(e)})
-
-# ============================================================
-# FLASK ROUTES (MODIFIED - Added server info)
+# FLASK ROUTES
 # ============================================================
 
 @app.route('/')
@@ -2079,47 +1646,31 @@ def normalize_name(name):
     """Normalizes a name for fuzzy matching by lowercasing and removing symbols."""
     if not name:
         return ""
-    # Lowercase, remove non-alphanumeric chars (except spaces), and collapse whitespace
     return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', name.lower())).strip()
 
 def check_duplicate(magnet_link, account, tokens, user_quality):
-    """
-    DEPRECATED: This function uses fuzzy name matching which is less reliable.
-    Use check_duplicate_by_hash for a more robust check.
-    """
+    """DEPRECATED: Fuzzy match check."""
     try:
         print(f"PIKPAK [{SERVER_ID}]: Running smart duplicate check...", flush=True)
         magnet_info = extract_magnet_info(magnet_link)
         
         if not magnet_info["name"] or not magnet_info["hash"]:
-            print(f"PIKPAK [{SERVER_ID}]: Could not extract sufficient info from magnet for duplicate check.", flush=True)
             return None
             
         normalized_magnet_name = normalize_name(magnet_info["name"])
-        print(f"PIKPAK [{SERVER_ID}]: Normalized magnet name: '{normalized_magnet_name}' | Hash: '{magnet_info['hash'][:10]}...'", flush=True)
-
-        # List files in the root directory (My Pack)
-        files = pikpak_list_files(None, account, tokens) # None means root
-        print(f"PIKPAK [{SERVER_ID}]: Found {len(files)} files in 'My Pack'. Starting comparison.", flush=True)
+        files = pikpak_list_files(None, account, tokens)
 
         for file in files:
             file_name = file.get('name')
             normalized_file_name = normalize_name(file_name)
 
-            # 1. Fuzzy Name Matching
             if normalized_file_name == normalized_magnet_name:
-                print(f"PIKPAK [{SERVER_ID}]: Fuzzy name match found: '{file_name}' (ID: {file['id']}). Verifying hash...", flush=True)
-                
-                # 2. Verify with hash
                 try:
                     file_info = pikpak_get_file_info(file['id'], account, tokens)
                     params_url = file_info.get("params", {}).get("url", "")
                     
                     if magnet_info["hash"] in params_url.lower():
-                        print(f"PIKPAK [{SERVER_ID}]: ✅ Found duplicate! Hash matches. File ID: {file['id']}", flush=True)
                         log_activity("info", f"Found duplicate: {file_name}")
-                        
-                        # We have a confirmed duplicate, prepare the response
                         download_url = pikpak_get_download_link(file['id'], account, tokens)
                         file_size = int(file.get('size', 0))
                         detected_quality = detect_quality(user_quality, magnet_link, file_size)
@@ -2138,53 +1689,36 @@ def check_duplicate(magnet_link, account, tokens, user_quality):
                            "quota_saved": True
                         }
                 except Exception as e:
-                    print(f"PIKPAK [{SERVER_ID}]: Verification failed for candidate '{file_name}': {e}", flush=True)
-                    continue # Try next file
-        
-        print(f"PIKPAK [{SERVER_ID}]: No duplicate found after checking all files.", flush=True)
+                    continue
         return None
 
     except Exception as e:
-        print(f"PIKPAK [{SERVER_ID}]: Smart duplicate check failed (continuing): {e}", flush=True)
         return None
 
 def check_duplicate_by_hash(magnet_link, account, tokens, user_quality):
-    """
-    Checks for duplicates by BTIH hash against ALL files in the root directory.
-    Returns file info dictionary if a duplicate is found, otherwise None.
-    """
+    """Checks for duplicates by BTIH hash."""
     try:
         print(f"PIKPAK [{SERVER_ID}]: Running robust duplicate check by hash...", flush=True)
         input_hash = extract_hash(magnet_link)
         
         if not input_hash:
-            print(f"PIKPAK [{SERVER_ID}]: Could not extract hash from magnet link.", flush=True)
             return None
             
-        print(f"PIKPAK [{SERVER_ID}]: Input hash: '{input_hash}'", flush=True)
-
-        # List files in the target directory (My Pack)
         target_folder = account.get("my_pack_id") or None
-        print(f"PIKPAK [{SERVER_ID}]: Listing files in folder: {target_folder or 'Root'}", flush=True)
         files = pikpak_list_files(target_folder, account, tokens)
-        print(f"PIKPAK [{SERVER_ID}]: Found {len(files)} files in 'My Pack'. Starting hash comparison.", flush=True)
 
         for file in files:
             file_name = file.get('name', 'Unknown')
             try:
-                # Get detailed file info to check the hash
                 file_info = pikpak_get_file_info(file['id'], account, tokens)
                 params_url = file_info.get("params", {}).get("url", "")
                 
-                # Check if the normalized hash from the magnet is in the file's metadata URL
                 is_match = input_hash in params_url.upper()
-                print(f"PIKPAK [{SERVER_ID}]: Checking file '{file_name}': Hash match? {is_match}", flush=True)
                 
                 if is_match:
-                    print(f"PIKPAK [{SERVER_ID}]: ✅ Quota Saved! Found existing file by hash: '{file_name}' (ID: {file['id']})", flush=True)
+                    print(f"PIKPAK [{SERVER_ID}]: ✅ Quota Saved! Found existing file by hash: '{file_name}'", flush=True)
                     log_activity("info", f"Found duplicate by hash: {file_name}")
                     
-                    # Prepare response for the found duplicate
                     download_url = pikpak_get_download_link(file['id'], account, tokens)
                     file_size = int(file.get('size', 0))
                     detected_quality = detect_quality(user_quality, magnet_link, file_size)
@@ -2203,10 +1737,7 @@ def check_duplicate_by_hash(magnet_link, account, tokens, user_quality):
                        "quota_saved": True
                     }
             except Exception as e:
-                print(f"PIKPAK [{SERVER_ID}]: Could not verify hash for file '{file_name}' (ID: {file['id']}): {e}", flush=True)
-                continue # Move to the next file
-        
-        print(f"PIKPAK [{SERVER_ID}]: No hash match found after checking all files.", flush=True)
+                continue
         return None
 
     except Exception as e:
@@ -2253,53 +1784,40 @@ def add_magnet():
                 tokens = ensure_logged_in(account)
 
                 # 2. Robust Duplicate Check by Hash
-                # Note: This check now runs on a single "best" account, not all of them.
                 duplicate_file = check_duplicate_by_hash(magnet, account, tokens, user_quality)
                 if duplicate_file:
                     return jsonify(duplicate_file)
 
-                # 3. Proceed with normal download if not found...
+                # 3. Proceed with normal download
                 print(f"PIKPAK [{SERVER_ID}]: No duplicate found. Proceeding to add magnet.", flush=True)
                 task = pikpak_add_magnet(magnet, account, tokens)
                 folder_id = task.get("file_id")
                 file_name = task.get("file_name", "Unknown")
                 
                 if not folder_id or str(folder_id).strip() == "":
-                    error_msg = "PikPak returned empty file_id - magnet may be invalid"
-                    print(f"PIKPAK [{SERVER_ID}]: ❌ {error_msg}", flush=True)
-                    return jsonify({"error": error_msg, "retry": False, "server": SERVER_ID}), 400
+                    return jsonify({"error": "PikPak returned empty file_id", "retry": False, "server": SERVER_ID}), 400
                 
                 pikpak_poll_download(folder_id, account, tokens, timeout=900)
                 
                 tokens = ensure_logged_in(account)
-                
                 file_info = pikpak_get_file_info(folder_id, account, tokens)
                 kind = file_info.get("kind", "")
-                
-                print(f"PIKPAK [{SERVER_ID}]: File kind: {kind}", flush=True)
                 
                 video_file = None
                 download_url = None
                 
                 if kind == "drive#folder":
-                    print(f"PIKPAK [{SERVER_ID}]: Detected FOLDER, listing contents...", flush=True)
                     files = pikpak_list_files(folder_id, account, tokens)
-                    
                     video_file = find_video_file(files)
                     if not video_file:
                         return jsonify({"error": "No video file found in folder", "retry": False, "server": SERVER_ID}), 400
-                    
                     tokens = ensure_logged_in(account)
                     download_url = pikpak_get_download_link(video_file["id"], account, tokens)
-                    
-                else: # Assumed to be a single file
-                    print(f"PIKPAK [{SERVER_ID}]: Detected SINGLE FILE", flush=True)
+                else: 
                     if not is_video_file(file_info):
                         return jsonify({"error": "Downloaded file is not a video", "retry": False, "server": SERVER_ID}), 400
-                    
                     video_file = file_info
                     download_url = file_info.get("web_content_link", "")
-                    
                     if not download_url:
                         tokens = ensure_logged_in(account)
                         download_url = pikpak_get_download_link(folder_id, account, tokens)
@@ -2318,7 +1836,6 @@ def add_magnet():
                 print(f"PIKPAK [{SERVER_ID}]: === ADD MAGNET SUCCESS ===", flush=True)
                 log_activity("success", f"Downloaded: {video_file.get('name', file_name)}")
                 update_daily_stats("downloads")
-                print(f"PIKPAK [{SERVER_ID}]: Quality detected: {detected_quality}", flush=True)
                 
                 return jsonify({
                     "result": True,
@@ -2341,31 +1858,63 @@ def add_magnet():
                     return jsonify({"error": error_msg, "retry": False}), 503
 
                 if last_account_id and last_account_id not in exhausted_accounts:
-                    # Handle specific errors by rotating accounts
                     if "Captcha failed" in error_msg:
-                        print(f"PIKPAK [{SERVER_ID}]: ⚠️ CAPTCHA error for account {last_account_id}. Rotating device ID.", flush=True)
                         db.rotate_device(last_account_id)
                         exhausted_accounts.append(last_account_id)
-                        continue # Retry with a new account immediately
-                    
+                        continue 
                     if "task_daily_create_limit" in error_msg:
-                        print(f"PIKPAK [{SERVER_ID}]: ⚠️ Account {last_account_id} hit daily limit!", flush=True)
-                        # The DB will mark it as exhausted, but we add it here to avoid re-selection in this cycle.
                         exhausted_accounts.append(last_account_id)
-                        continue # Retry with a new account
+                        continue 
 
                 if "All PikPak accounts exhausted" in error_msg:
                     return jsonify({"error": error_msg, "retry": False, "server": SERVER_ID}), 500
                 
-                if "Read timed out" in error_msg or "Download timeout" in error_msg:
-                     return jsonify({"error": error_msg, "retry": False, "server": SERVER_ID}), 500
-
                 if attempt >= max_total_retries:
                     return jsonify({"error": f"Max retries reached: {error_msg}", "retry": False, "server": SERVER_ID}), 500
                 
                 time.sleep(3)
     
-    return jsonify({"error": "Max retries exceeded after loop", "retry": False, "server": SERVER_ID}), 500
+    return jsonify({"error": "Max retries exceeded", "retry": False, "server": SERVER_ID}), 500
+
+@app.route('/admin/api/test-magnet', methods=['POST'])
+def admin_test_magnet():
+    """Test magnet link without downloading"""
+    try:
+        magnet = request.json.get('magnet', '').strip()
+        
+        if not magnet:
+            return jsonify({"valid": False, "error": "No magnet provided"})
+        
+        if '-magnet:' in magnet:
+            parts = magnet.split('-', 1)
+            if len(parts) == 2:
+                magnet = parts[1]
+        
+        if not magnet.startswith('magnet:?'):
+            return jsonify({"valid": False, "error": "Invalid magnet format"})
+        
+        name = "Unknown"
+        dn_match = re.search(r'dn=([^&]+)', magnet)
+        if dn_match:
+            name = dn_match.group(1).replace('+', ' ').replace('%20', ' ').replace('%28', '(').replace('%29', ')')
+
+        available_account = "None available"
+        try:
+            account = get_best_account()
+            available_account = account["id"]
+        except Exception as e:
+            available_account = f"Error: {e}"
+
+        return jsonify({
+            "valid": True,
+            "name": name,
+            "quality": "auto",
+            "account": available_account,
+            "server": SERVER_ID
+        })
+        
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)})
 
 @app.route('/list-files', methods=['POST'])
 def list_files():
@@ -2375,7 +1924,7 @@ def list_files():
         if not folder_id:
             return jsonify({"error": "Missing folder_id"}), 400
         
-        account = select_available_account()
+        account = get_best_account()
         tokens = ensure_logged_in(account)
         
         files = pikpak_list_files(folder_id, account, tokens)
@@ -2398,7 +1947,7 @@ def get_link():
         if not file_id:
             return jsonify({"error": "Missing file_id"}), 400
         
-        account = select_available_account()
+        account = get_best_account()
         tokens = ensure_logged_in(account)
         
         download_url = pikpak_get_download_link(file_id, account, tokens)
@@ -2417,7 +1966,7 @@ def delete_folder():
         if not folder_id or folder_id == 'null' or folder_id == 'None':
             return jsonify({"error": "Invalid folder_id"}), 400
         
-        account = select_available_account()
+        account = get_best_account()
         tokens = ensure_logged_in(account)
         
         pikpak_delete_file(folder_id, account, tokens)
@@ -2432,39 +1981,8 @@ def delete_folder():
 def pikpak_status():
     """Get PikPak accounts status"""
     try:
-        tokens_data = load_pikpak_tokens()
-        usage = tokens_data.get("daily_usage", {})
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        accounts_status = []
-        total_remaining = 0
-        
-        for account in PIKPAK_ACCOUNTS:
-            account_key = f"account_{account['id']}"
-            account_usage = usage.get(account_key, {})
-            
-            if account_usage.get("date") != today:
-                downloads_today = 0
-            else:
-                downloads_today = account_usage.get("count", 0)
-            
-            remaining = 5 - downloads_today
-            total_remaining += remaining
-            
-            accounts_status.append({
-                "id": account["id"],
-                "email": account["email"],
-                "downloads_today": downloads_today,
-                "downloads_remaining": remaining,
-                "available": remaining > 0
-            })
-        
-        return jsonify({
-            "server": SERVER_ID,
-            "accounts": accounts_status,
-            "total_remaining": total_remaining,
-            "total_accounts": len(PIKPAK_ACCOUNTS)
-        })
+        # Re-using admin_api_status logic as it is cleaner with DB
+        return admin_api_status()
         
     except Exception as e:
         return jsonify({"error": str(e), "server": SERVER_ID}), 500
@@ -2557,9 +2075,16 @@ if __name__ == '__main__':
     print(f"🚀 PikPak-Telegram Bridge - SERVER: {SERVER_ID.upper()}", flush=True)
     print(f"📍 URL: {SERVER_URL}", flush=True)
     print(f"🎬 Handles: 1080p, 2160p, 4K (large files)", flush=True)
-    print(f"📦 Loaded {len(PIKPAK_ACCOUNTS)} PikPak accounts: {[a['id'] for a in PIKPAK_ACCOUNTS]}", flush=True)
     print(f"🔑 Session: {SESSION_NAME}", flush=True)
     print("=" * 60, flush=True)
-    check_all_accounts_quota() 
+    
+    # Run startup checks
+    try:
+        db_accounts = db.get_all_server_accounts(DB_SERVER_ID)
+        print(f"📦 Loaded {len(db_accounts)} PikPak accounts from DB", flush=True)
+        check_all_accounts_quota()
+    except Exception as e:
+        print(f"⚠️ Startup DB Check Failed: {e}", flush=True)
+        
     ensure_worker_alive()
     app.run(host='0.0.0.0', port=10000)
