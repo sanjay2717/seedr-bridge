@@ -1523,26 +1523,7 @@ def admin_reset_quota(account_id):
 # FLASK ROUTES (MODIFIED - Added server info)
 # ============================================================
 
-@app.route('/')
-def home(): 
-    """Health check with server identification"""
-    ensure_worker_alive()
-    return jsonify({
-        "status": "online",
-        "server": {
-            "id": SERVER_ID,
-            "mode": SERVER_MODE,
-            "url": SERVER_URL,
-            "handles": "1080p, 2160p, 4K (large files)"
-        },
-        "service": "PikPak-Telegram Bridge",
-        "queue": JOB_QUEUE.qsize(),
-        "jobs": len(JOBS),
-        "sessions": len(MESSAGE_SESSIONS),
-        "pikpak_accounts": len(PIKPAK_ACCOUNTS),
-        "pikpak_account_ids": [acc["id"] for acc in PIKPAK_ACCOUNTS],
-        "worker_alive": WORKER_THREAD.is_alive() if WORKER_THREAD else False
-    })
+
 
 @app.route('/static/<path:filename>')
 def serve_static(filename):
