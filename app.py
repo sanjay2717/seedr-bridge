@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from io import IOBase
 from urllib.parse import unquote
 from flask import Flask, request, jsonify, render_template, send_from_directory
-from pyrogram import Client
+from pyrogram import Client, enums
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -1172,7 +1172,9 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
                         caption=caption,
                         file_name=filename,
                         force_document=True,
-                        progress=progress_callback
+                        progress=progress_callback,
+                        parse_mode=enums.ParseMode.HTML,  # NEW: Enable HTML
+                        thumb="thumbnail.jpg" if os.path.exists("thumbnail.jpg") else None  # NEW: Local Thumb
                     )
 
                     elapsed = time.time() - start_time
