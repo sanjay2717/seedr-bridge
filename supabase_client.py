@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from typing import Optional, Dict
@@ -49,7 +50,7 @@ class SupabaseDB:
             print(f"❌ DB Error (get_best_account): {e}")
             return None
 
-    def increment_quota(self, account_id: int):
+    def increment_quota(self, account_id: int) -> bool:
         """
         Call this AFTER a successful download to update quota usage.
         """
@@ -62,11 +63,15 @@ class SupabaseDB:
                 # Update usage and timestamp
                 self.client.table('accounts').update({
                     'quota_used': new_val,
-                    'last_used_at': 'now()'
+                    'last_used_at': datetime.now(timezone.utc).isoformat(),
+                    'updated_at': datetime.now(timezone.utc).isoformat()
                 }).eq('id', account_id).execute()
                 print(f"✅ Quota updated for Account ID {account_id}: {new_val}/5")
+                return True
+            return False
         except Exception as e:
             print(f"❌ DB Error (increment_quota): {e}")
+            return False
 
     def rotate_device(self, account_id: int) -> Optional[str]:
         """
@@ -91,7 +96,7 @@ class SupabaseDB:
                 .eq('server_id', server_id)\
                 .order('id', desc=False)\
                 .execute()
-            return response.data
+            return response.data or []
         except Exception as e:
             print(f"❌ DB Error (get_all_server_accounts): {e}")
             return []
@@ -99,7 +104,10 @@ class SupabaseDB:
     def reset_account_quota(self, account_id: int):
         """Reset quota for specific account"""
         try:
-            self.client.table('accounts').update({'quota_used': 0}).eq('id', account_id).execute()
+            self.client.table('accounts').update({
+                'quota_used': 0,
+                'last_used_at': datetime.now(timezone.utc).isoformat()
+            }).eq('id', account_id).execute()
             return True
         except Exception as e:
             print(f"❌ DB Error (reset_account_quota): {e}")
