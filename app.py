@@ -593,7 +593,8 @@ def pikpak_poll_download(file_id, account, tokens, timeout=120, filename=None, f
                     print(f"PIKPAK [{SERVER_ID}]: Triggering Recovery Search for '{filename}'", flush=True)
                     
                     try:
-                        all_files = pikpak_list_files(parent_id=None, account=account, tokens=tokens)
+                        parent_id = account.get("my_pack_id") or ""
+                        all_files = pikpak_list_files(parent_id, account, tokens)
                         found_file = None
                         
                         # 1. Match by hash
@@ -1387,7 +1388,7 @@ def admin_clear_all_trash():
         for account in all_accounts:
             try:
                 response = admin_clear_trash(account["id"])
-                if response.json.get("success"):
+                if response.get_json().get("success"):
                     count += 1
             except Exception as e:
                 print(f"Failed to clear trash for account {account['id']}: {e}", flush=True)
@@ -1404,7 +1405,7 @@ def admin_clear_all_mypack():
         for account in all_accounts:
             try:
                 response = admin_clear_mypack(account["id"])
-                if response.json.get("success"):
+                if response.get_json().get("success"):
                     count += 1
             except Exception as e:
                 print(f"Failed to clear mypack for account {account['id']}: {e}", flush=True)
