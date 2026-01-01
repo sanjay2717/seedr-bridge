@@ -588,12 +588,17 @@ def pikpak_poll_download(file_id, account, tokens, timeout=120):
             
             print(f"PIKPAK [{SERVER_ID}]: Status: {phase} ({progress}%)", flush=True)
             
-            if phase == "PHASE_TYPE_COMPLETE":
-                print(f"PIKPAK [{SERVER_ID}]: ✅ Download complete!", flush=True)
+            # Robust completion check
+            if phase == "PHASE_TYPE_COMPLETE" or data.get('progress') == 100:
+                print(f"PIKPAK [{SERVER_ID}]: ✅ Download complete! (Phase: {phase}, Progress: {progress}%)", flush=True)
                 return True
             elif phase == "PHASE_TYPE_ERROR":
                 raise Exception(f"Download failed: {data.get('message', 'Unknown error')}")
-            
+            else:
+                # Debug log for unexpected responses
+                if not phase or phase != "PHASE_TYPE_COMPLETE":
+                    print(f"DEBUG RESPONSE: {data}", flush=True)
+
             time.sleep(poll_interval)
             
         except Exception as e:
