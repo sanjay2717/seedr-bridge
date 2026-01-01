@@ -582,6 +582,12 @@ def pikpak_poll_download(file_id, account, tokens, timeout=120):
             
             response = requests.get(url, headers=headers, timeout=30)
             data = response.json()
+
+            # Handle case where file is not ready yet
+            if response.status_code == 404 or data.get("error") == "file_not_found":
+                print(f"PIKPAK [{SERVER_ID}]: File not ready yet, waiting...", flush=True)
+                time.sleep(poll_interval)
+                continue
             
             phase = data.get("phase", "")
             progress = data.get("progress", 0)
