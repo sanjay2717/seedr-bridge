@@ -1051,6 +1051,9 @@ def detect_quality_from_size(size_bytes):
 
 async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=0):
     """Upload video with optimized speed"""
+    # Check emergency stop before starting
+    if EMERGENCY_STOP:
+        raise Exception("Emergency stop activated - upload cancelled")
     
     if file_size_mb > 2048:
         raise Exception(f"File too large: {file_size_mb:.1f}MB (max 2048MB)")
@@ -1061,6 +1064,10 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
     last_log_bytes = [0]
     
     def progress_callback(current, total):
+        # Check emergency stop during upload
+        if EMERGENCY_STOP:
+            raise Exception("Emergency stop activated during upload")
+        
         now = time.time()
         elapsed = now - last_log_time[0]
         
