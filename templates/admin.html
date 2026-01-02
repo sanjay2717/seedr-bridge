@@ -382,112 +382,114 @@
                 resultDiv.innerHTML = '<p class="test-error">❌ Failed to test magnet</p>';
             }
         }
+
         // Clear trash for single account
-async function clearTrash(accountId) {
-    if (!confirm(`Clear trash for Account ${accountId}?`)) return;
-    
-    try {
-        const response = await fetch(`/admin/api/clear-trash/${accountId}`, { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-        
-        if (data.success) {
-            alert(`✅ Trash cleared for Account ${accountId}!`);
-            refreshData();
-        } else {
-            alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+        async function clearTrash(accountId) {
+            if (!confirm(`Clear trash for Account ${accountId}?`)) return;
+            
+            try {
+                const response = await fetch(`/admin/api/clear-trash/${accountId}`, { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ Trash cleared for Account ${accountId}!`);
+                    refreshData();
+                } else {
+                    alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Request failed: ${error.message}`);
+            }
         }
-    } catch (error) {
-        alert(`❌ Request failed: ${error.message}`);
-    }
-}
 
-// Clear My Pack for single account
-async function clearMyPack(accountId) {
-    if (!confirm(`⚠️ Delete ALL files in My Pack for Account ${accountId}? This cannot be undone!`)) return;
-    
-    try {
-        const response = await fetch(`/admin/api/clear-mypack/${accountId}`, { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-        
-        if (data.success) {
-            alert(`✅ My Pack cleared for Account ${accountId}! (${data.files_deleted} files deleted)`);
-            refreshData();
-        } else {
-            alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+        // Clear My Pack for single account
+        async function clearMyPack(accountId) {
+            if (!confirm(`⚠️ Delete ALL files in My Pack for Account ${accountId}? This cannot be undone!`)) return;
+            
+            try {
+                const response = await fetch(`/admin/api/clear-mypack/${accountId}`, { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ My Pack cleared for Account ${accountId}! (${data.files_deleted} files deleted)`);
+                    refreshData();
+                } else {
+                    alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Request failed: ${error.message}`);
+            }
         }
-    } catch (error) {
-        alert(`❌ Request failed: ${error.message}`);
-    }
-}
 
-// Clear trash for ALL accounts
-async function clearAllTrash() {
-    if (!confirm('🗑️ Clear trash for ALL accounts?')) return;
-    
-    const btn = document.querySelector('.btn-warning');
-    const originalText = btn.innerHTML;
-    
-    try {
-        btn.disabled = true;
-        btn.innerHTML = '⏳ Clearing...';
-        
-        const response = await fetch('/admin/api/clear-all-trash', { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-        
-        if (data.success) {
-            alert(`✅ Trash cleared for ${data.accounts_cleared} accounts!`);
-            refreshData();
-        } else {
-            alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+        // Clear trash for ALL accounts
+        async function clearAllTrash() {
+            if (!confirm('🗑️ Clear trash for ALL accounts?')) return;
+            
+            const btn = document.querySelector('.btn-warning');
+            const originalText = btn.innerHTML;
+            
+            try {
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Clearing...';
+                
+                const response = await fetch('/admin/api/clear-all-trash', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ Trash cleared for ${data.accounts_cleared} accounts!`);
+                    refreshData();
+                } else {
+                    alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Request failed: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
         }
-    } catch (error) {
-        alert(`❌ Request failed: ${error.message}`);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = originalText;
-    }
-}
 
-// Clear My Pack for ALL accounts
-async function clearAllMyPack() {
-    if (!confirm('⚠️ DELETE ALL FILES in My Pack for ALL accounts?\n\nThis cannot be undone!')) return;
-    if (!confirm('🚨 Are you REALLY sure? This will delete everything!')) return;
-    
-    const btn = document.querySelector('.btn-danger:not(#emergencyBtn)');
-    const originalText = btn.innerHTML;
-    
-    try {
-        btn.disabled = true;
-        btn.innerHTML = '⏳ Clearing...';
-        
-        const response = await fetch('/admin/api/clear-all-mypack', { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-        
-        if (data.success) {
-            alert(`✅ My Pack cleared for ${data.accounts_cleared} accounts!`);
-            refreshData();
-        } else {
-            alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+        // Clear My Pack for ALL accounts
+        async function clearAllMyPack() {
+            if (!confirm('⚠️ DELETE ALL FILES in My Pack for ALL accounts?\n\nThis cannot be undone!')) return;
+            if (!confirm('🚨 Are you REALLY sure? This will delete everything!')) return;
+            
+            const btn = document.querySelector('.btn-danger:not(#emergencyBtn)');
+            const originalText = btn.innerHTML;
+            
+            try {
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Clearing...';
+                
+                const response = await fetch('/admin/api/clear-all-mypack', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ My Pack cleared for ${data.accounts_cleared} accounts!`);
+                    refreshData();
+                } else {
+                    alert(`❌ Failed: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Request failed: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
         }
-    } catch (error) {
-        alert(`❌ Request failed: ${error.message}`);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = originalText;
-    }
-}
+
     </script>
 </body>
 </html>
