@@ -1414,7 +1414,7 @@ def admin_clear_all_trash():
                 if response.get_json().get("success"):
                     count += 1
             except Exception as e:
-                print(f"Failed to clear trash for account {account['id']}: {e}", flush=True)
+                print(f"PIKPAK [{SERVER_ID}]: Failed to clear trash for account {account['id']}: {e}", flush=True)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     return jsonify({"success": True, "accounts_cleared": count})
@@ -1431,7 +1431,7 @@ def admin_clear_all_mypack():
                 if response.get_json().get("success"):
                     count += 1
             except Exception as e:
-                print(f"Failed to clear mypack for account {account['id']}: {e}", flush=True)
+                print(f"PIKPAK [{SERVER_ID}]: Failed to clear mypack for account {account['id']}: {e}", flush=True)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     return jsonify({"success": True, "accounts_cleared": count})
