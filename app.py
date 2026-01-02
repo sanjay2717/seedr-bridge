@@ -1607,10 +1607,11 @@ def start_session():
 
 @app.route('/add-magnet-to-session', methods=['POST'])
 def add_magnet_to_session():
-    """Add magnet to session"""
+    """Add magnet to session with quality"""
     data = request.json
     poster_msg_id = str(data.get('poster_message_id'))
     magnet = data.get('magnet')
+    quality = data.get('quality', 'auto')
     
     with SESSION_LOCK:
         if poster_msg_id not in MESSAGE_SESSIONS:
@@ -1626,10 +1627,14 @@ def add_magnet_to_session():
         if len(session['magnets']) >= 3:
             return jsonify({"error": "max_magnets"}), 400
         
-        session['magnets'].append(magnet)
-        print(f"SESSION [{SERVER_ID}]: Added magnet {len(session['magnets'])}/3", flush=True)
+        # Store as object with quality
+        session['magnets'].append({
+            "magnet": magnet,
+            "quality": quality
+        })
+        print(f"SESSION [{SERVER_ID}]: Added magnet {len(session['magnets'])}/3 (quality: {quality})", flush=True)
     
-    return jsonify({"status": "magnet_added", "count": len(session['magnets']), "server": SERVER_ID})
+    return jsonify({"status": "magnet_added", "count": len(session['magnets']), "quality": quality, "server": SERVER_ID})
 
 @app.route('/get-session/<poster_msg_id>', methods=['GET'])
 def get_session(poster_msg_id):
