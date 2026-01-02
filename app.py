@@ -1327,8 +1327,11 @@ def admin_clear_trash(account_id):
         requests.patch(url, headers=headers, json={}, timeout=30)
         
         # Invalidate cache
-        if f"account_{account_id}" in PIKPAK_STORAGE_CACHE:
-            del PIKPAK_STORAGE_CACHE[f"account_{account_id}"]
+        cache_key = f"account_{account_id}"
+        if cache_key in PIKPAK_STORAGE_CACHE:
+            del PIKPAK_STORAGE_CACHE[cache_key]
+        if cache_key in PIKPAK_STORAGE_CACHE_TIME:
+            del PIKPAK_STORAGE_CACHE_TIME[cache_key]
 
         get_account_storage(account)
         
