@@ -45,6 +45,10 @@ HEADERS_STREAM = {
     "Content-Type": "application/x-www-form-urlencoded"
 }
 
+class EmergencyStopError(Exception):
+    """Custom exception for emergency stop."""
+    pass
+
 EMERGENCY_STOP = False
 
 # Message collection storage
@@ -566,7 +570,7 @@ def pikpak_poll_download(file_id, account, tokens, timeout=120, filename=None, f
     
     while time.time() - start_time < timeout:
         if EMERGENCY_STOP:
-            raise Exception("Emergency stop activated during polling")
+            raise EmergencyStopError("Emergency stop activated during polling")
         try:
             captcha_sign, timestamp = generate_captcha_sign(device_id)
             captcha_token = get_pikpak_captcha(
@@ -1053,7 +1057,7 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
     """Upload video with optimized speed"""
     # Check emergency stop before starting
     if EMERGENCY_STOP:
-        raise Exception("Emergency stop activated - upload cancelled")
+        raise EmergencyStopError("Emergency stop activated - upload cancelled")
     
     if file_size_mb > 2048:
         raise Exception(f"File too large: {file_size_mb:.1f}MB (max 2048MB)")
@@ -1066,7 +1070,7 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
     def progress_callback(current, total):
         # Check emergency stop during upload
         if EMERGENCY_STOP:
-            raise Exception("Emergency stop activated during upload")
+            raise EmergencyStopError("Emergency stop activated during upload")
         
         now = time.time()
         elapsed = now - last_log_time[0]
@@ -1147,6 +1151,10 @@ async def perform_upload(file_url, chat_target, caption, filename, file_size_mb=
                         "server": SERVER_ID
                     }
         
+        except EmergencyStopError:
+            # Re-raise to be caught by worker_loop without retrying
+            raise
+            
         except FloodWait as e:
             print(f"WORKER [{SERVER_ID}]: FloodWait {e.value}s, waiting...", flush=True)
             await asyncio.sleep(e.value)
@@ -1243,6 +1251,16 @@ def worker_loop():
             update_daily_stats("total_bytes", result.get('file_size', 0))
             update_daily_stats("total_time", result.get('upload_time', 0))
             
+        except EmergencyStopError as e:
+            error_msg = "cancelled by emergency stop"
+            print(f"WORKER [{SERVER_ID}] CANCELLED: Job {job_id} cancelled by emergency stop.", flush=True)
+            if job_id:
+                JOBS[job_id]['status'] = 'failed'
+                log_activity("failed", f"Upload cancelled: Emergency Stop")
+                update_daily_stats("failed")
+                JOBS[job_id]['error'] = error_msg
+                JOBS[job_id]['failed'] = time.time()
+
         except Exception as e:
             error_msg = str(e)
             print(f"WORKER [{SERVER_ID}] ERROR: {error_msg}", flush=True)
