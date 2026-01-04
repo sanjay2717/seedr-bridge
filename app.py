@@ -2278,7 +2278,7 @@ def gofile_job_status(job_id):
             "status": "failed",
             "job_id": job_id,
             "error": job.get("error", "Unknown error")
-        }), 500
+        })
 
     return jsonify({
         "success": True,
