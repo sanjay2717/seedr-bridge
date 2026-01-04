@@ -1216,6 +1216,87 @@ JOBS = {}
 WORKER_THREAD = None
 WORKER_LOCK = threading.Lock()
 
+# ============================================================
+# GOFILE BACKGROUND JOBS
+# ============================================================
+GOFILE_JOBS = {}
+GOFILE_JOBS_LOCK = threading.Lock()
+
+def _run_gofile_upload_job(job_id: str):
+    """
+    Background job: stream from PikPak URL to Gofile without blocking HTTP request.
+    Updates GOFILE_JOBS[job_id] with status + result/error.
+    """
+    with GOFILE_JOBS_LOCK:
+        job = GOFILE_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "processing"
+        job["started_at"] = time.time()
+
+    try:
+        payload = job["payload"]
+        pikpak_url = payload["url"]
+        filename = payload["filename"]
+        movie_name = payload.get("movie_name") or "Unknown"
+        quality = payload.get("quality") or "auto"
+        pikpak_file_id = payload.get("pikpak_file_id")
+
+        parent_folder_id = os.environ.get("GOFILE_PARENT_FOLDER_ID")
+        folder_id = None
+        folder_code = None
+
+        if parent_folder_id:
+            folder_data = gofile_client.create_folder(parent_folder_id=parent_folder_id, folder_name=movie_name)
+            if folder_data:
+                folder_id = folder_data.get("id")
+                folder_code = folder_data.get("code")
+
+        upload_result = gofile_client.upload_file_stream(pikpak_url, folder_id, filename)
+        if not upload_result:
+            raise Exception("Gofile upload failed")
+
+        # Save completed upload to DB (only when we have real gofile file_id, links, size)
+        try:
+            db.add_gofile_upload({
+                "file_id": upload_result.get("file_id"),
+                "server": upload_result.get("server", "global"),
+                "folder_id": folder_id,
+                "folder_code": folder_code,
+                "file_name": upload_result.get("file_name", filename),
+                "file_size": upload_result.get("file_size", 0),
+                "direct_link": upload_result.get("direct_link"),
+                "movie_name": movie_name,
+                "quality": quality,
+                "pikpak_file_id": pikpak_file_id,
+            })
+        except Exception as db_exc:
+            print(f"GOFILE [{SERVER_ID}]: DB save failed for job {job_id}: {db_exc}", flush=True)
+
+        result_payload = {
+            "gofile_link": upload_result.get("download_page") or (f"https://gofile.io/d/{folder_code}" if folder_code else None),
+            "direct_link": upload_result.get("direct_link"),
+            "folder_link": (f"https://gofile.io/d/{folder_code}" if folder_code else None),
+            "file_id": upload_result.get("file_id"),
+            "file_name": upload_result.get("file_name", filename),
+            "file_size": upload_result.get("file_size", 0),
+            "server": upload_result.get("server", "global"),
+            "quality": quality
+        }
+
+        with GOFILE_JOBS_LOCK:
+            GOFILE_JOBS[job_id]["status"] = "done"
+            GOFILE_JOBS[job_id]["result"] = result_payload
+            GOFILE_JOBS[job_id]["completed_at"] = time.time()
+
+    except Exception as e:
+        with GOFILE_JOBS_LOCK:
+            if job_id in GOFILE_JOBS:
+                GOFILE_JOBS[job_id]["status"] = "failed"
+                GOFILE_JOBS[job_id]["error"] = str(e)
+                GOFILE_JOBS[job_id]["failed_at"] = time.time()
+        print(f"GOFILE [{SERVER_ID}]: Job {job_id} failed: {e}", flush=True)
+
 def worker_loop():
     """Background worker"""
     print(f"SYSTEM [{SERVER_ID}]: Queue Worker Started", flush=True)
