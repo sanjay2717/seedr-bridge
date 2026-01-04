@@ -88,7 +88,7 @@ class GofileClient:
             folder_id (str): The Gofile folder ID to upload the file into.
             file_name (str): The desired name for the file in Gofile.
         Returns:
-            dict: Upload metadata (fileId, fileName, downloadPage, directLink) or None on failure.
+            dict: Upload metadata (fileId, fileName, downloadPage, directLink, server, fileSize) or None on failure.
         """
         print(f"GOFILE INFO: Starting stream upload for '{file_name}' from URL.")
         server = self.get_best_server()
@@ -101,6 +101,10 @@ class GofileClient:
             # Step 1: GET request to file_url with stream=True
             with requests.get(file_url, stream=True, timeout=1800) as pikpak_response:
                 pikpak_response.raise_for_status()
+
+                # Capture file size from headers
+                content_length = pikpak_response.headers.get('Content-Length')
+                file_size = int(content_length) if content_length else None
 
                 # Step 2: POST request to https://{server}.gofile.io/uploadFile
                 upload_url = f"https://{server}.gofile.io/uploadFile"
@@ -122,6 +126,10 @@ class GofileClient:
 
                     if upload_data.get("status") == "ok":
                         result = upload_data["data"]
+                        # Add server to result
+                        result['server'] = server
+                        # Add file size to result
+                        result['fileSize'] = file_size
                         # Manually construct the direct download link
                         result['directLink'] = f"https://{server}.gofile.io/download/web/{result['fileId']}/{result['fileName']}"
                         print(f"GOFILE INFO: Upload successful for '{file_name}'.")
