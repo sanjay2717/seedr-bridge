@@ -15,6 +15,7 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from gofile_client import GofileClient
 
 app = Flask(__name__)
 
@@ -104,6 +105,9 @@ def update_daily_stats(stat_type, value=1):
         DAILY_STATS[stat_type] += value
 
 from supabase_client import db
+
+# Initialize Gofile Client
+gofile_client = GofileClient()
 
 # ============================================================
 # DB CONFIG
