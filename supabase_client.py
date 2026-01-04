@@ -170,5 +170,104 @@ class SupabaseDB:
             print(f"❌ DB Error (sync_account_stats): {e}")
             return False
 
+    # ============================================
+    # GOFILE UPLOAD METHODS
+    # ============================================
+
+    def add_gofile_upload(self, data: Dict) -> Optional[Dict]:
+        """
+        Insert a new Gofile upload record.
+        
+        Required in data: file_id, server
+        Optional: folder_id, folder_code, file_name, file_size, 
+                  movie_name, quality, direct_link, pikpak_file_id
+        """
+        try:
+            response = self.client.table('gofile_uploads').insert({
+                'file_id': data['file_id'],
+                'server': data['server'],
+                'folder_id': data.get('folder_id'),
+                'folder_code': data.get('folder_code'),
+                'file_name': data.get('file_name'),
+                'file_size': data.get('file_size'),
+                'movie_name': data.get('movie_name'),
+                'quality': data.get('quality'),
+                'direct_link': data.get('direct_link'),
+                'pikpak_file_id': data.get('pikpak_file_id')
+            }).execute()
+            
+            print(f"✅ Gofile recorded: {data.get('file_name', data['file_id'])}")
+            return response.data[0] if response.data else None
+            
+        except Exception as e:
+            print(f"❌ DB Error (add_gofile_upload): {e}")
+            return None
+
+    def get_active_gofile_uploads(self) -> list:
+        """
+        Get all active Gofile uploads.
+        """
+        try:
+            response = self.client.table('gofile_uploads')\
+                .select('*')\
+                .eq('status', 'active')\
+                .order('created_at', desc=True)\
+                .execute()
+            
+            return response.data or []
+            
+        except Exception as e:
+            print(f"❌ DB Error (get_active_gofile_uploads): {e}")
+            return []
+
+    def update_gofile_keep_alive(self, file_id: str, status: str = None, server: str = None) -> bool:
+        """
+        Update Gofile record: timestamp always updated, status/server optional.
+        
+        Args:
+            file_id: Gofile content ID
+            status: Optional - 'active', 'expired', 'deleted'
+            server: Optional - new server if migrated
+        """
+        try:
+            update_data = {
+                'last_keep_alive': datetime.now(timezone.utc).isoformat()
+            }
+            
+            if status is not None:
+                update_data['status'] = status
+            
+            if server is not None:
+                update_data['server'] = server
+            
+            self.client.table('gofile_uploads')\
+                .update(update_data)\
+                .eq('file_id', file_id)\
+                .execute()
+            
+            print(f"🔄 Gofile updated: {file_id}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ DB Error (update_gofile_keep_alive): {e}")
+            return False
+
+    def get_gofile_by_file_id(self, file_id: str) -> Optional[Dict]:
+        """
+        Get single Gofile record by file_id.
+        """
+        try:
+            response = self.client.table('gofile_uploads')\
+                .select('*')\
+                .eq('file_id', file_id)\
+                .limit(1)\
+                .execute()
+            
+            return response.data[0] if response.data else None
+            
+        except Exception as e:
+            print(f"❌ DB Error (get_gofile_by_file_id): {e}")
+            return None
+
 # Singleton instance
 db = SupabaseDB()
