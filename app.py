@@ -1970,8 +1970,10 @@ def add_magnet():
                 file_size = int(video_file.get("size", 0))
                 file_size_mb = file_size / 1024 / 1024
                 
+                gofile_required = False
                 if file_size_mb > 2048:
-                    return jsonify({"error": f"File too large: {file_size_mb:.0f}MB", "retry": False, "server": SERVER_ID}), 400
+                    print(f"PIKPAK [{SERVER_ID}]: File > 2GB ({file_size_mb:.0f}MB). Flagging for Gofile.", flush=True)
+                    gofile_required = True
                 
                 # SUCCESS: Increment quota in DB
                 db.increment_quota(account["id"])
@@ -1992,6 +1994,7 @@ def add_magnet():
                     "account_used": account["id"],
                     "file_type": "folder" if kind == "drive#folder" else "file",
                     "quality_detected": detected_quality,
+                    "gofile_required": gofile_required,
                     "server": SERVER_ID
                 })
                 
