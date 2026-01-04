@@ -114,7 +114,7 @@ class GofileClient:
 
     def upload_file_stream(self, file_url, folder_id, file_name):
         """
-        Uploads a file by streaming it from a URL and creates a direct link.
+        Uploads a file by streaming it from a URL to prevent memory issues.
         
         Args:
             file_url (str): The direct download URL of the file to upload.
@@ -123,56 +123,60 @@ class GofileClient:
         Returns:
             dict: Upload metadata (file_id, file_name, download_page, direct_link, server, file_size), or None on failure.
         """
-        print(f"GOFILE INFO: Starting stream upload for '{file_name}'.")
+        print(f"GOFILE INFO: Starting memory-efficient stream upload for '{file_name}'.")
         
         try:
-            # Step 1: Stream from source URL
-            with requests.get(file_url, stream=True, timeout=1800) as pikpak_response:
-                pikpak_response.raise_for_status()
+            # Step 1: Open a streaming connection to the source URL
+            with requests.get(file_url, stream=True, timeout=(10, 1800)) as r:
+                r.raise_for_status()
 
-                # Step 2: Upload to Gofile's global upload endpoint
-                files = {'file': (file_name, pikpak_response.raw)}
+                # Step 2: Pass the raw stream directly to the POST request's `files` parameter.
+                # This ensures the file is not loaded into memory. `requests` will stream it chunk-by-chunk.
+                files = {'file': (file_name, r.raw)}
                 data = {'folderId': folder_id}
                 
-                print(f"GOFILE INFO: Streaming to {GOFILE_UPLOAD_URL}...")
+                print(f"GOFILE INFO: Streaming to {GOFILE_UPLOAD_URL} with chunked encoding...")
                 
-                with requests.post(
+                # The `files` parameter with a raw stream triggers `Transfer-Encoding: chunked`.
+                # `stream=True` on the POST is for the *response*, not the upload, but we include it for safety.
+                upload_response = requests.post(
                     GOFILE_UPLOAD_URL,
                     headers=self.headers,
                     data=data,
                     files=files,
-                    timeout=1800
-                ) as upload_response:
-                    upload_response.raise_for_status()
-                    upload_data = upload_response.json()
+                    timeout=1800,
+                    stream=True 
+                )
+                upload_response.raise_for_status()
+                upload_data = upload_response.json()
 
-                    if upload_data.get("status") != "ok":
-                        error_msg = upload_data.get("data", {}).get("error", "Unknown error")
-                        print(f"GOFILE ERROR: File upload failed - {error_msg}")
-                        return None
+                if upload_data.get("status") != "ok":
+                    error_msg = upload_data.get("data", {}).get("error", "Unknown error")
+                    print(f"GOFILE ERROR: File upload failed - {error_msg}")
+                    return None
 
-                    result = upload_data["data"]
-                    print(f"GOFILE INFO: Upload successful for '{result.get('fileName')}'. File ID: {result.get('fileId')}")
+                result = upload_data["data"]
+                print(f"GOFILE INFO: Upload successful for '{result.get('fileName')}'. File ID: {result.get('fileId')}")
 
-                    # Step 3: Create a direct link for the newly uploaded file
-                    file_id = result.get('fileId')
-                    direct_link_data = self.create_direct_link(file_id)
-                    direct_link = None
-                    if direct_link_data and 'link' in direct_link_data:
-                        direct_link = direct_link_data['link']
-                        print(f"GOFILE INFO: Successfully created direct link.")
-                    else:
-                        print(f"GOFILE WARN: Could not create direct link for {file_id}.")
+                # Step 3: Create a direct link for the newly uploaded file
+                file_id = result.get('fileId')
+                direct_link_data = self.create_direct_link(file_id)
+                direct_link = None
+                if direct_link_data and 'link' in direct_link_data:
+                    direct_link = direct_link_data['link']
+                    print(f"GOFILE INFO: Successfully created direct link.")
+                else:
+                    print(f"GOFILE WARN: Could not create direct link for {file_id}.")
 
-                    # Step 4: Format response for DB compatibility
-                    return {
-                        "file_id": result.get("fileId"),
-                        "file_name": result.get("fileName"),
-                        "download_page": result.get("downloadPage"),
-                        "direct_link": direct_link,
-                        "server": result.get('server', 'global'),  # Fallback for server
-                        "file_size": result.get('size', 0)         # Fallback for size
-                    }
+                # Step 4: Format response for DB compatibility
+                return {
+                    "file_id": result.get("fileId"),
+                    "file_name": result.get("fileName"),
+                    "download_page": result.get("downloadPage"),
+                    "direct_link": direct_link,
+                    "server": result.get('server', 'global'),  # Fallback for server
+                    "file_size": result.get('size', 0)         # Fallback for size
+                }
 
         except requests.exceptions.RequestException as e:
             print(f"GOFILE ERROR: Request failed during file upload stream: {e}")
