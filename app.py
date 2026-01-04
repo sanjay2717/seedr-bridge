@@ -2305,52 +2305,41 @@ cleanup_thread.start()
 
 @app.route('/upload-gofile', methods=['POST'])
 def upload_gofile():
-    """Stream upload from PikPak to Gofile"""
-    data = request.json
-    pikpak_url = data.get('url')
-    filename = data.get('filename')
-    movie_name = data.get('movie_name')
-    quality = data.get('quality')
-    pikpak_file_id = data.get('pikpak_file_id')
-    
+    """Queue a Gofile upload job and return immediately with job_id."""
+    data = request.json or {}
+    pikpak_url = data.get("url")
+    filename = data.get("filename")
+    movie_name = data.get("movie_name")
+    quality = data.get("quality")
+    pikpak_file_id = data.get("pikpak_file_id")
+
     if not pikpak_url or not filename:
-        return jsonify({"error": "Missing url or filename"}), 400
-        
-    # 1. Create Folder
-    folder_data = gofile_client.create_folder(
-        parent_folder_id=os.environ.get("GOFILE_PARENT_FOLDER_ID"),
-        folder_name=movie_name
-    )
-    folder_id = folder_data['id'] if folder_data else None
-    folder_code = folder_data['code'] if folder_data else None
-    
-    # 2. Upload File (Stream)
-    result = gofile_client.upload_file_stream(pikpak_url, folder_id, filename)
-    
-    if result:
-        # 3. Save to Database
-        db_data = {
-            'file_id': result['fileId'],
-            'server': result['server'],
-            'folder_id': folder_id,
-            'folder_code': folder_code,
-            'file_name': result['fileName'],
-            'file_size': result['size'],
-            'direct_link': result['directLink'],
-            'movie_name': movie_name,
-            'quality': quality,
-            'pikpak_file_id': pikpak_file_id
+        return jsonify({"success": False, "error": "Missing url or filename"}), 400
+
+    job_id = str(uuid.uuid4())
+
+    with GOFILE_JOBS_LOCK:
+        GOFILE_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "created_at": time.time(),
+            "payload": {
+                "url": pikpak_url,
+                "filename": filename,
+                "movie_name": movie_name,
+                "quality": quality,
+                "pikpak_file_id": pikpak_file_id
+            }
         }
-        db.add_gofile_upload(db_data)
-        
-        return jsonify({
-            "success": True,
-            "gofile_link": result['downloadPage'],
-            "direct_link": result['directLink'],
-            "folder_link": f"https://gofile.io/d/{folder_code}" if folder_code else None
-        })
-    else:
-        return jsonify({"error": "Gofile upload failed"}), 500
+
+    t = threading.Thread(target=_run_gofile_upload_job, args=(job_id,), daemon=True)
+    t.start()
+
+    return jsonify({
+        "success": True,
+        "status": "queued",
+        "job_id": job_id
+    })
 
 @app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
