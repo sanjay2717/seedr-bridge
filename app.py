@@ -2215,6 +2215,87 @@ cleanup_thread.start()
 # MAIN
 # ============================================================
 
+# ============================================================
+# GOFILE ROUTES
+# ============================================================
+
+@app.route('/upload-gofile', methods=['POST'])
+def upload_gofile():
+    """Stream upload from PikPak to Gofile"""
+    data = request.json
+    pikpak_url = data.get('url')
+    filename = data.get('filename')
+    movie_name = data.get('movie_name')
+    quality = data.get('quality')
+    pikpak_file_id = data.get('pikpak_file_id')
+    
+    if not pikpak_url or not filename:
+        return jsonify({"error": "Missing url or filename"}), 400
+        
+    # 1. Create Folder
+    folder_data = gofile_client.create_folder(
+        parent_folder_id=os.environ.get("GOFILE_PARENT_FOLDER_ID"),
+        folder_name=movie_name
+    )
+    folder_id = folder_data['id'] if folder_data else None
+    folder_code = folder_data['code'] if folder_data else None
+    
+    # 2. Upload File (Stream)
+    result = gofile_client.upload_file_stream(pikpak_url, folder_id, filename)
+    
+    if result:
+        # 3. Save to Database
+        db_data = {
+            'file_id': result['fileId'],
+            'server': result['server'],
+            'folder_id': folder_id,
+            'folder_code': folder_code,
+            'file_name': result['fileName'],
+            'file_size': result['size'],
+            'direct_link': result['directLink'],
+            'movie_name': movie_name,
+            'quality': quality,
+            'pikpak_file_id': pikpak_file_id
+        }
+        db.add_gofile_upload(db_data)
+        
+        return jsonify({
+            "success": True,
+            "gofile_link": result['downloadPage'],
+            "direct_link": result['directLink'],
+            "folder_link": f"https://gofile.io/d/{folder_code}" if folder_code else None
+        })
+    else:
+        return jsonify({"error": "Gofile upload failed"}), 500
+
+@app.route('/gofile/keep-alive', methods=['POST'])
+def gofile_keep_alive():
+    """Trigger keep-alive for all active Gofile uploads"""
+    active_files = db.get_active_gofile_uploads()
+    success_count = 0
+    failed_count = 0
+    
+    print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
+    
+    for file in active_files:
+        if not file.get('direct_link'):
+            continue
+            
+        if gofile_client.keep_alive(file['direct_link']):
+            db.update_gofile_keep_alive(file['file_id'])
+            success_count += 1
+        else:
+            # Retry logic or mark expired could go here
+            failed_count += 1
+            
+    return jsonify({
+        "success": True,
+        "processed": len(active_files),
+        "kept_alive": success_count,
+        "failed": failed_count
+    })
+
+
 if __name__ == '__main__':
     print("=" * 60, flush=True)
     print(f"🚀 PikPak-Telegram Bridge - SERVER: {SERVER_ID.upper()}", flush=True)
