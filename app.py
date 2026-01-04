@@ -2253,6 +2253,39 @@ def job_status(job_id):
         return jsonify({"status": "not_found", "server": SERVER_ID}), 404
     return jsonify({**job, "server": SERVER_ID})
 
+@app.route('/gofile-job-status/<job_id>', methods=['GET'])
+def gofile_job_status(job_id):
+    """Check status of a gofile upload job."""
+    with GOFILE_JOBS_LOCK:
+        job = GOFILE_JOBS.get(job_id)
+
+    if not job:
+        return jsonify({"success": False, "status": "not_found", "job_id": job_id}), 404
+
+    status = job.get("status")
+
+    if status == "done":
+        return jsonify({
+            "success": True,
+            "status": "done",
+            "job_id": job_id,
+            "result": job.get("result", {})
+        })
+
+    if status == "failed":
+        return jsonify({
+            "success": False,
+            "status": "failed",
+            "job_id": job_id,
+            "error": job.get("error", "Unknown error")
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "status": status,
+        "job_id": job_id
+    })
+
 @app.route('/extract-metadata', methods=['POST'])
 def extract_metadata():
     """Extract metadata from magnet"""
