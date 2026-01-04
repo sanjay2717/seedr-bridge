@@ -121,7 +121,7 @@ class GofileClient:
             folder_id (str): The Gofile folder ID to upload into.
             file_name (str): The desired name for the file.
         Returns:
-            dict: Upload metadata (fileId, fileName, downloadPage, directLink), or None on failure.
+            dict: Upload metadata (file_id, file_name, download_page, direct_link, server, file_size), or None on failure.
         """
         print(f"GOFILE INFO: Starting stream upload for '{file_name}'.")
         
@@ -157,15 +157,22 @@ class GofileClient:
                     # Step 3: Create a direct link for the newly uploaded file
                     file_id = result.get('fileId')
                     direct_link_data = self.create_direct_link(file_id)
-                    
+                    direct_link = None
                     if direct_link_data and 'link' in direct_link_data:
-                        result['directLink'] = direct_link_data['link']
+                        direct_link = direct_link_data['link']
                         print(f"GOFILE INFO: Successfully created direct link.")
                     else:
                         print(f"GOFILE WARN: Could not create direct link for {file_id}.")
-                        result['directLink'] = None # Ensure it's explicitly set
 
-                    return result
+                    # Step 4: Format response for DB compatibility
+                    return {
+                        "file_id": result.get("fileId"),
+                        "file_name": result.get("fileName"),
+                        "download_page": result.get("downloadPage"),
+                        "direct_link": direct_link,
+                        "server": result.get('server', 'global'),  # Fallback for server
+                        "file_size": result.get('size', 0)         # Fallback for size
+                    }
 
         except requests.exceptions.RequestException as e:
             print(f"GOFILE ERROR: Request failed during file upload stream: {e}")
