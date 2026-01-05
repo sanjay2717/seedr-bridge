@@ -115,37 +115,38 @@ class GofileClient:
     def upload_file_stream(self, file_url, folder_id, file_name):
         """
         Uploads a file by streaming it from a URL to prevent memory issues.
+        This version uses an explicit iterator to ensure chunked streaming.
         
         Args:
             file_url (str): The direct download URL of the file to upload.
             folder_id (str): The Gofile folder ID to upload into.
             file_name (str): The desired name for the file.
         Returns:
-            dict: Upload metadata (file_id, file_name, download_page, direct_link, server, file_size), or None on failure.
+            dict: Upload metadata, or None on failure.
         """
-        print(f"GOFILE INFO: Starting memory-efficient stream upload for '{file_name}'.")
+        print(f"GOFILE INFO: Starting robust, memory-efficient stream upload for '{file_name}'.")
         
         try:
             # Step 1: Open a streaming connection to the source URL
             with requests.get(file_url, stream=True, timeout=(10, 1800)) as r:
                 r.raise_for_status()
 
-                # Step 2: Pass the raw stream directly to the POST request's `files` parameter.
-                # This ensures the file is not loaded into memory. `requests` will stream it chunk-by-chunk.
-                files = {'file': (file_name, r.raw)}
+                # Step 2: Use the iterator from iter_content. This is crucial.
+                # It forces requests to stream the upload body chunk-by-chunk instead of loading it all into memory.
+                # This is more robust than passing r.raw.
+                file_iterator = r.iter_content(chunk_size=4 * 1024 * 1024) # 4MB chunks
+
+                files = {'file': (file_name, file_iterator, 'application/octet-stream')}
                 data = {'folderId': folder_id}
                 
-                print(f"GOFILE INFO: Streaming to {GOFILE_UPLOAD_URL} with chunked encoding...")
+                print(f"GOFILE INFO: Streaming to {GOFILE_UPLOAD_URL} with chunked encoding via iterator...")
                 
-                # The `files` parameter with a raw stream triggers `Transfer-Encoding: chunked`.
-                # `stream=True` on the POST is for the *response*, not the upload, but we include it for safety.
                 upload_response = requests.post(
                     GOFILE_UPLOAD_URL,
                     headers=self.headers,
                     data=data,
                     files=files,
-                    timeout=1800,
-                    stream=True 
+                    timeout=3600 # Increased timeout for very large files
                 )
                 upload_response.raise_for_status()
                 upload_data = upload_response.json()
@@ -174,8 +175,8 @@ class GofileClient:
                     "file_name": result.get("fileName"),
                     "download_page": result.get("downloadPage"),
                     "direct_link": direct_link,
-                    "server": result.get('server', 'global'),  # Fallback for server
-                    "file_size": result.get('size', 0)         # Fallback for size
+                    "server": result.get('server', 'global'),
+                    "file_size": int(r.headers.get('content-length', 0)) # Get size from original download headers
                 }
 
         except requests.exceptions.RequestException as e:
