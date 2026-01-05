@@ -218,14 +218,10 @@ class GofileClient:
         
         source_response = None
         try:
-            # Step 1: Get best server for upload
-            server = self._get_best_server()
-            if server:
-                upload_url = f"https://{server}.gofile.io/uploadfile"
-            else:
-                upload_url = "https://store1.gofile.io/uploadfile"
+            # Step 1: Use Singapore regional upload proxy for Render Singapore
+            upload_url = "https://upload-ap-sgp.gofile.io/uploadfile"
             
-            print(f"GOFILE INFO: Using upload URL: {upload_url}")
+            print(f"GOFILE INFO: Using Singapore regional upload proxy: {upload_url}")
             
             # Step 2: Open a streaming connection to the source URL
             source_response = requests.get(file_url, stream=True, timeout=(10, 1800), headers=HEADERS_PIKPAK)
@@ -314,7 +310,7 @@ class GofileClient:
                 "file_name": result.get("fileName"),
                 "download_page": result.get("downloadPage"),
                 "direct_link": direct_link,
-                "server": result.get('server', server or 'global'),
+                "server": result.get('server', 'ap-sgp'),
                 "file_size": file_size or result.get('size', 0)
             }
 
