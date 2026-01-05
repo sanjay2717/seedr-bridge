@@ -12,6 +12,12 @@ import json
 GOFILE_BASE_URL = "https://api.gofile.io"
 GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN")
 
+# Headers for streaming from PikPak
+HEADERS_PIKPAK = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Content-Type": "application/x-www-form-urlencoded"
+}
+
 
 class StreamingIteratorWrapper:
     """
@@ -222,7 +228,7 @@ class GofileClient:
             print(f"GOFILE INFO: Using upload URL: {upload_url}")
             
             # Step 2: Open a streaming connection to the source URL
-            source_response = requests.get(file_url, stream=True, timeout=(10, 1800))
+            source_response = requests.get(file_url, stream=True, timeout=(10, 1800), headers=HEADERS_PIKPAK)
             source_response.raise_for_status()
             
             # Get file size from headers if available
