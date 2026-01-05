@@ -5,3 +5,4 @@ pyrogram
 tgcrypto
 supabase
 python-dotenv
+requests-toolbelt>=1.0.0

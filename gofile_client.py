@@ -1,20 +1,79 @@
 """
 Handles all interactions with the Gofile.io API, including streaming uploads from PikPak URLs.
 Updated for Gofile API v2 (2024+)
+Uses requests-toolbelt for true streaming multipart uploads (no RAM buffering)
 """
 import requests
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
 import os
 import json
 
 # --- CONSTANTS ---
 GOFILE_BASE_URL = "https://api.gofile.io"
-GOFILE_UPLOAD_URL = "https://upload.gofile.io/uploadfile"
 GOFILE_TOKEN = os.environ.get("GOFILE_TOKEN")
+
+
+class StreamingIteratorWrapper:
+    """
+    Wraps a streaming iterator to make it compatible with MultipartEncoder.
+    This provides a file-like object that reads from the stream without buffering.
+    """
+    
+    def __init__(self, iterator, total_size=None):
+        self.iterator = iterator
+        self.total_size = total_size
+        self._buffer = b''
+        self._bytes_read = 0
+        self._exhausted = False
+        self._logged_300mb = False
+    
+    def read(self, size=-1):
+        """Read bytes from the streaming iterator."""
+        if self._exhausted and not self._buffer:
+            return b''
+        
+        # If size is -1 or None, read everything (not recommended for large files)
+        if size is None or size < 0:
+            result = self._buffer
+            self._buffer = b''
+            for chunk in self.iterator:
+                result += chunk
+            self._exhausted = True
+            self._bytes_read += len(result)
+            return result
+        
+        # Read until we have enough bytes or iterator is exhausted
+        while len(self._buffer) < size and not self._exhausted:
+            try:
+                chunk = next(self.iterator)
+                self._buffer += chunk
+            except StopIteration:
+                self._exhausted = True
+                break
+        
+        # Return requested bytes
+        result = self._buffer[:size]
+        self._buffer = self._buffer[size:]
+        self._bytes_read += len(result)
+        
+        # Progress logging
+        if not self._logged_300mb and self._bytes_read >= 300 * 1024 * 1024:
+            print(f"GOFILE INFO: Streaming correctly. Over 300MB processed ({self._bytes_read / (1024*1024):.1f} MB)")
+            self._logged_300mb = True
+        
+        return result
+    
+    def __len__(self):
+        """Return total size if known (required for Content-Length header)."""
+        if self.total_size:
+            return self.total_size
+        raise TypeError("Size unknown")
 
 
 class GofileClient:
     """
     A client for interacting with the Gofile.io API (v2).
+    Uses true streaming uploads to avoid memory issues.
     """
 
     def __init__(self):
@@ -27,6 +86,31 @@ class GofileClient:
             raise ValueError("GOFILE ERROR: GOFILE_TOKEN environment variable not set.")
         self.token = GOFILE_TOKEN
         self.headers = {"Authorization": f"Bearer {self.token}"}
+
+    def _get_best_server(self):
+        """
+        Gets the best available server for upload.
+        
+        Returns:
+            str: The server name (e.g., 'store1'), or None on failure.
+        """
+        url = f"{GOFILE_BASE_URL}/servers"
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") == "ok":
+                servers = data.get("data", {}).get("servers", [])
+                if servers:
+                    # Return the first available server
+                    server = servers[0].get("name")
+                    print(f"GOFILE INFO: Selected upload server: {server}")
+                    return server
+            print("GOFILE WARN: Could not get best server, using default.")
+            return None
+        except Exception as e:
+            print(f"GOFILE WARN: Failed to get best server: {e}")
+            return None
 
     def get_account_id(self):
         """
@@ -114,8 +198,8 @@ class GofileClient:
 
     def upload_file_stream(self, file_url, folder_id, file_name):
         """
-        Uploads a file by streaming it from a URL to prevent memory issues.
-        This version uses an explicit iterator to ensure chunked streaming and adds progress logging.
+        Uploads a file by TRUE STREAMING from a URL - NO RAM BUFFERING.
+        Uses requests-toolbelt MultipartEncoder for chunked transfer encoding.
         
         Args:
             file_url (str): The direct download URL of the file to upload.
@@ -124,72 +208,116 @@ class GofileClient:
         Returns:
             dict: Upload metadata, or None on failure.
         """
-        print(f"GOFILE INFO: Starting robust, memory-efficient stream upload for '{file_name}'.")
+        print(f"GOFILE INFO: Starting TRUE streaming upload for '{file_name}' (no RAM buffering).")
         
+        source_response = None
         try:
-            # Step 1: Open a streaming connection to the source URL
-            with requests.get(file_url, stream=True, timeout=(10, 1800)) as r:
-                r.raise_for_status()
+            # Step 1: Get best server for upload
+            server = self._get_best_server()
+            if server:
+                upload_url = f"https://{server}.gofile.io/uploadfile"
+            else:
+                upload_url = "https://store1.gofile.io/uploadfile"
+            
+            print(f"GOFILE INFO: Using upload URL: {upload_url}")
+            
+            # Step 2: Open a streaming connection to the source URL
+            source_response = requests.get(file_url, stream=True, timeout=(10, 1800))
+            source_response.raise_for_status()
+            
+            # Get file size from headers if available
+            file_size = source_response.headers.get('content-length')
+            file_size = int(file_size) if file_size else None
+            
+            if file_size:
+                print(f"GOFILE INFO: Source file size: {file_size / (1024*1024):.2f} MB")
+            else:
+                print(f"GOFILE INFO: Source file size unknown, using chunked transfer.")
+            
+            # Step 3: Create streaming iterator (4MB chunks for efficiency)
+            file_iterator = source_response.iter_content(chunk_size=4 * 1024 * 1024)
+            
+            # Step 4: Wrap iterator in file-like object for MultipartEncoder
+            streaming_wrapper = StreamingIteratorWrapper(file_iterator, file_size)
+            
+            # Step 5: Create MultipartEncoder for TRUE streaming upload
+            # This sends data as it reads - NO BUFFERING IN RAM
+            fields = {
+                'folderId': folder_id,
+                'file': (file_name, streaming_wrapper, 'application/octet-stream')
+            }
+            
+            encoder = MultipartEncoder(fields=fields)
+            
+            # Step 6: Create progress monitor (optional but useful for debugging)
+            bytes_uploaded = [0]
+            last_logged = [0]
+            
+            def progress_callback(monitor):
+                bytes_uploaded[0] = monitor.bytes_read
+                # Log every 100MB
+                if bytes_uploaded[0] - last_logged[0] >= 100 * 1024 * 1024:
+                    print(f"GOFILE INFO: Uploaded {bytes_uploaded[0] / (1024*1024):.1f} MB...")
+                    last_logged[0] = bytes_uploaded[0]
+            
+            monitor = MultipartEncoderMonitor(encoder, progress_callback)
+            
+            # Step 7: Prepare headers - Content-Type MUST include boundary
+            upload_headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': monitor.content_type
+            }
+            
+            # If we know the size, we can set Content-Length for better compatibility
+            # Otherwise, requests-toolbelt will use chunked transfer encoding
+            
+            print(f"GOFILE INFO: Starting chunked upload to Gofile...")
+            
+            # Step 8: Perform the upload - this streams directly, no buffering!
+            upload_response = requests.post(
+                upload_url,
+                headers=upload_headers,
+                data=monitor,
+                timeout=7200  # 2 hours for very large files
+            )
+            
+            upload_response.raise_for_status()
+            upload_data = upload_response.json()
 
-                # Step 2: Create an iterator that logs progress
-                file_iterator = r.iter_content(chunk_size=4 * 1024 * 1024) # 4MB chunks
-                
-                total_bytes_streamed = 0
-                has_logged_300mb = False
+            if upload_data.get("status") != "ok":
+                error_msg = upload_data.get("data", {}).get("error", "Unknown error")
+                print(f"GOFILE ERROR: File upload failed - {error_msg}")
+                return None
 
-                def logging_iterator(iterator):
-                    nonlocal total_bytes_streamed, has_logged_300mb
-                    for chunk in iterator:
-                        yield chunk
-                        total_bytes_streamed += len(chunk)
-                        if not has_logged_300mb and total_bytes_streamed >= 300 * 1024 * 1024:
-                            print("GOFILE INFO: Upload streaming correctly. Over 300MB processed.")
-                            has_logged_300mb = True
-                
-                # Step 3: Prepare the upload
-                files = {'file': (file_name, logging_iterator(file_iterator), 'application/octet-stream')}
-                data = {'folderId': folder_id}
-                
-                print(f"GOFILE INFO: Streaming to {GOFILE_UPLOAD_URL} with chunked encoding via iterator...")
-                
-                upload_response = requests.post(
-                    GOFILE_UPLOAD_URL,
-                    headers=self.headers,
-                    data=data,
-                    files=files,
-                    timeout=3600 # Increased timeout for very large files
-                )
-                upload_response.raise_for_status()
-                upload_data = upload_response.json()
+            result = upload_data["data"]
+            print(f"GOFILE INFO: Upload successful for '{result.get('fileName')}'. File ID: {result.get('fileId')}")
 
-                if upload_data.get("status") != "ok":
-                    error_msg = upload_data.get("data", {}).get("error", "Unknown error")
-                    print(f"GOFILE ERROR: File upload failed - {error_msg}")
-                    return None
+            # Step 9: Create a direct link for the newly uploaded file
+            file_id = result.get('fileId')
+            direct_link_data = self.create_direct_link(file_id)
+            direct_link = None
+            if direct_link_data and 'link' in direct_link_data:
+                direct_link = direct_link_data['link']
+                print(f"GOFILE INFO: Successfully created direct link.")
+            else:
+                print(f"GOFILE WARN: Could not create direct link for {file_id}.")
 
-                result = upload_data["data"]
-                print(f"GOFILE INFO: Upload successful for '{result.get('fileName')}'. File ID: {result.get('fileId')}")
+            # Step 10: Format response for DB compatibility
+            return {
+                "file_id": result.get("fileId"),
+                "file_name": result.get("fileName"),
+                "download_page": result.get("downloadPage"),
+                "direct_link": direct_link,
+                "server": result.get('server', server or 'global'),
+                "file_size": file_size or result.get('size', 0)
+            }
 
-                # Step 4: Create a direct link for the newly uploaded file
-                file_id = result.get('fileId')
-                direct_link_data = self.create_direct_link(file_id)
-                direct_link = None
-                if direct_link_data and 'link' in direct_link_data:
-                    direct_link = direct_link_data['link']
-                    print(f"GOFILE INFO: Successfully created direct link.")
-                else:
-                    print(f"GOFILE WARN: Could not create direct link for {file_id}.")
-
-                # Step 5: Format response for DB compatibility
-                return {
-                    "file_id": result.get("fileId"),
-                    "file_name": result.get("fileName"),
-                    "download_page": result.get("downloadPage"),
-                    "direct_link": direct_link,
-                    "server": result.get('server', 'global'),
-                    "file_size": int(r.headers.get('content-length', 0)) # Get size from original download headers
-                }
-
+        except requests.exceptions.Timeout as e:
+            print(f"GOFILE ERROR: Upload timed out: {e}")
+            return None
+        except requests.exceptions.ConnectionError as e:
+            print(f"GOFILE ERROR: Connection error during upload: {e}")
+            return None
         except requests.exceptions.RequestException as e:
             print(f"GOFILE ERROR: Request failed during file upload stream: {e}")
             return None
@@ -198,7 +326,13 @@ class GofileClient:
             return None
         except Exception as e:
             print(f"GOFILE ERROR: An unexpected error occurred during file upload: {e}")
+            import traceback
+            traceback.print_exc()
             return None
+        finally:
+            # Always close the source connection
+            if source_response:
+                source_response.close()
 
     def create_direct_link(self, content_id):
         """
