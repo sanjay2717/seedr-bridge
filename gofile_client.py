@@ -115,7 +115,7 @@ class GofileClient:
     def upload_file_stream(self, file_url, folder_id, file_name):
         """
         Uploads a file by streaming it from a URL to prevent memory issues.
-        This version uses an explicit iterator to ensure chunked streaming.
+        This version uses an explicit iterator to ensure chunked streaming and adds progress logging.
         
         Args:
             file_url (str): The direct download URL of the file to upload.
@@ -131,12 +131,23 @@ class GofileClient:
             with requests.get(file_url, stream=True, timeout=(10, 1800)) as r:
                 r.raise_for_status()
 
-                # Step 2: Use the iterator from iter_content. This is crucial.
-                # It forces requests to stream the upload body chunk-by-chunk instead of loading it all into memory.
-                # This is more robust than passing r.raw.
+                # Step 2: Create an iterator that logs progress
                 file_iterator = r.iter_content(chunk_size=4 * 1024 * 1024) # 4MB chunks
+                
+                total_bytes_streamed = 0
+                has_logged_300mb = False
 
-                files = {'file': (file_name, file_iterator, 'application/octet-stream')}
+                def logging_iterator(iterator):
+                    nonlocal total_bytes_streamed, has_logged_300mb
+                    for chunk in iterator:
+                        yield chunk
+                        total_bytes_streamed += len(chunk)
+                        if not has_logged_300mb and total_bytes_streamed >= 300 * 1024 * 1024:
+                            print("GOFILE INFO: Upload streaming correctly. Over 300MB processed.")
+                            has_logged_300mb = True
+                
+                # Step 3: Prepare the upload
+                files = {'file': (file_name, logging_iterator(file_iterator), 'application/octet-stream')}
                 data = {'folderId': folder_id}
                 
                 print(f"GOFILE INFO: Streaming to {GOFILE_UPLOAD_URL} with chunked encoding via iterator...")
@@ -159,7 +170,7 @@ class GofileClient:
                 result = upload_data["data"]
                 print(f"GOFILE INFO: Upload successful for '{result.get('fileName')}'. File ID: {result.get('fileId')}")
 
-                # Step 3: Create a direct link for the newly uploaded file
+                # Step 4: Create a direct link for the newly uploaded file
                 file_id = result.get('fileId')
                 direct_link_data = self.create_direct_link(file_id)
                 direct_link = None
@@ -169,7 +180,7 @@ class GofileClient:
                 else:
                     print(f"GOFILE WARN: Could not create direct link for {file_id}.")
 
-                # Step 4: Format response for DB compatibility
+                # Step 5: Format response for DB compatibility
                 return {
                     "file_id": result.get("fileId"),
                     "file_name": result.get("fileName"),
