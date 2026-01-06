@@ -15,7 +15,6 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from gofile_client import GofileClient
 
 app = Flask(__name__)
 
@@ -105,9 +104,6 @@ def update_daily_stats(stat_type, value=1):
         DAILY_STATS[stat_type] += value
 
 from supabase_client import db
-
-# Initialize Gofile Client
-gofile_client = GofileClient()
 
 # ============================================================
 # DB CONFIG
@@ -1216,87 +1212,6 @@ JOBS = {}
 WORKER_THREAD = None
 WORKER_LOCK = threading.Lock()
 
-# ============================================================
-# GOFILE BACKGROUND JOBS
-# ============================================================
-GOFILE_JOBS = {}
-GOFILE_JOBS_LOCK = threading.Lock()
-
-def _run_gofile_upload_job(job_id: str):
-    """
-    Background job: stream from PikPak URL to Gofile without blocking HTTP request.
-    Updates GOFILE_JOBS[job_id] with status + result/error.
-    """
-    with GOFILE_JOBS_LOCK:
-        job = GOFILE_JOBS.get(job_id)
-        if not job:
-            return
-        job["status"] = "processing"
-        job["started_at"] = time.time()
-
-    try:
-        payload = job["payload"]
-        pikpak_url = payload["url"]
-        filename = payload["filename"]
-        movie_name = payload.get("movie_name") or "Unknown"
-        quality = payload.get("quality") or "auto"
-        pikpak_file_id = payload.get("pikpak_file_id")
-
-        parent_folder_id = os.environ.get("GOFILE_PARENT_FOLDER_ID")
-        folder_id = None
-        folder_code = None
-
-        if parent_folder_id:
-            folder_data = gofile_client.create_folder(parent_folder_id=parent_folder_id, folder_name=movie_name)
-            if folder_data:
-                folder_id = folder_data.get("id")
-                folder_code = folder_data.get("code")
-
-        upload_result = gofile_client.upload_file_stream(pikpak_url, folder_id, filename)
-        if not upload_result:
-            raise Exception("Gofile upload failed")
-
-        # Save completed upload to DB (only when we have real gofile file_id, links, size)
-        try:
-            db.add_gofile_upload({
-                "file_id": upload_result.get("file_id"),
-                "server": upload_result.get("server", "global"),
-                "folder_id": folder_id,
-                "folder_code": folder_code,
-                "file_name": upload_result.get("file_name", filename),
-                "file_size": upload_result.get("file_size", 0),
-                "direct_link": upload_result.get("direct_link"),
-                "movie_name": movie_name,
-                "quality": quality,
-                "pikpak_file_id": pikpak_file_id,
-            })
-        except Exception as db_exc:
-            print(f"GOFILE [{SERVER_ID}]: DB save failed for job {job_id}: {db_exc}", flush=True)
-
-        result_payload = {
-            "gofile_link": upload_result.get("download_page") or (f"https://gofile.io/d/{folder_code}" if folder_code else None),
-            "direct_link": upload_result.get("direct_link"),
-            "folder_link": (f"https://gofile.io/d/{folder_code}" if folder_code else None),
-            "file_id": upload_result.get("file_id"),
-            "file_name": upload_result.get("file_name", filename),
-            "file_size": upload_result.get("file_size", 0),
-            "server": upload_result.get("server", "global"),
-            "quality": quality
-        }
-
-        with GOFILE_JOBS_LOCK:
-            GOFILE_JOBS[job_id]["status"] = "done"
-            GOFILE_JOBS[job_id]["result"] = result_payload
-            GOFILE_JOBS[job_id]["completed_at"] = time.time()
-
-    except Exception as e:
-        with GOFILE_JOBS_LOCK:
-            if job_id in GOFILE_JOBS:
-                GOFILE_JOBS[job_id]["status"] = "failed"
-                GOFILE_JOBS[job_id]["error"] = str(e)
-                GOFILE_JOBS[job_id]["failed_at"] = time.time()
-        print(f"GOFILE [{SERVER_ID}]: Job {job_id} failed: {e}", flush=True)
-
 def worker_loop():
     """Background worker"""
     print(f"SYSTEM [{SERVER_ID}]: Queue Worker Started", flush=True)
@@ -2049,13 +1964,6 @@ def add_magnet():
                         download_url = pikpak_get_download_link(folder_id, account, tokens)
                 
                 file_size = int(video_file.get("size", 0))
-                file_size_mb = file_size / 1024 / 1024
-                
-                gofile_required = False
-                if file_size_mb > 2048:
-                    print(f"PIKPAK [{SERVER_ID}]: File > 2GB ({file_size_mb:.0f}MB). Flagging for Gofile.", flush=True)
-                    gofile_required = True
-                
                 # SUCCESS: Increment quota in DB
                 db.increment_quota(account["id"])
                 
@@ -2075,7 +1983,6 @@ def add_magnet():
                     "account_used": account["id"],
                     "file_type": "folder" if kind == "drive#folder" else "file",
                     "quality_detected": detected_quality,
-                    "gofile_required": gofile_required,
                     "server": SERVER_ID
                 })
                 
@@ -2253,39 +2160,6 @@ def job_status(job_id):
         return jsonify({"status": "not_found", "server": SERVER_ID}), 404
     return jsonify({**job, "server": SERVER_ID})
 
-@app.route('/gofile-job-status/<job_id>', methods=['GET'])
-def gofile_job_status(job_id):
-    """Check status of a gofile upload job."""
-    with GOFILE_JOBS_LOCK:
-        job = GOFILE_JOBS.get(job_id)
-
-    if not job:
-        return jsonify({"success": False, "status": "not_found", "job_id": job_id}), 404
-
-    status = job.get("status")
-
-    if status == "done":
-        return jsonify({
-            "success": True,
-            "status": "done",
-            "job_id": job_id,
-            "result": job.get("result", {})
-        })
-
-    if status == "failed":
-        return jsonify({
-            "success": False,
-            "status": "failed",
-            "job_id": job_id,
-            "error": job.get("error", "Unknown error")
-        })
-
-    return jsonify({
-        "success": True,
-        "status": status,
-        "job_id": job_id
-    })
-
 @app.route('/extract-metadata', methods=['POST'])
 def extract_metadata():
     """Extract metadata from magnet"""
@@ -2336,70 +2210,32 @@ cleanup_thread.start()
 # GOFILE ROUTES
 # ============================================================
 
-@app.route('/upload-gofile', methods=['POST'])
-def upload_gofile():
-    """Queue a Gofile upload job and return immediately with job_id."""
-    data = request.json or {}
-    pikpak_url = data.get("url")
-    filename = data.get("filename")
-    movie_name = data.get("movie_name")
-    quality = data.get("quality")
-    pikpak_file_id = data.get("pikpak_file_id")
-
-    if not pikpak_url or not filename:
-        return jsonify({"success": False, "error": "Missing url or filename"}), 400
-
-    job_id = str(uuid.uuid4())
-
-    with GOFILE_JOBS_LOCK:
-        GOFILE_JOBS[job_id] = {
-            "job_id": job_id,
-            "status": "queued",
-            "created_at": time.time(),
-            "payload": {
-                "url": pikpak_url,
-                "filename": filename,
-                "movie_name": movie_name,
-                "quality": quality,
-                "pikpak_file_id": pikpak_file_id
-            }
-        }
-
-    t = threading.Thread(target=_run_gofile_upload_job, args=(job_id,), daemon=True)
-    t.start()
-
-    return jsonify({
-        "success": True,
-        "status": "queued",
-        "job_id": job_id
-    })
-
-@app.route('/gofile/keep-alive', methods=['POST'])
-def gofile_keep_alive():
-    """Trigger keep-alive for all active Gofile uploads"""
-    active_files = db.get_active_gofile_uploads()
-    success_count = 0
-    failed_count = 0
-    
-    print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
-    
-    for file in active_files:
-        if not file.get('direct_link'):
-            continue
-            
-        if gofile_client.keep_alive(file['direct_link']):
-            db.update_gofile_keep_alive(file['file_id'])
-            success_count += 1
-        else:
-            # Retry logic or mark expired could go here
-            failed_count += 1
-            
-    return jsonify({
-        "success": True,
-        "processed": len(active_files),
-        "kept_alive": success_count,
-        "failed": failed_count
-    })
+# @app.route('/gofile/keep-alive', methods=['POST'])
+# def gofile_keep_alive():
+#     """Trigger keep-alive for all active Gofile uploads"""
+#     active_files = db.get_active_gofile_uploads()
+#     success_count = 0
+#     failed_count = 0
+#
+#     print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
+#
+#     for file in active_files:
+#         if not file.get('direct_link'):
+#             continue
+#
+#         if gofile_client.keep_alive(file['direct_link']):
+#             db.update_gofile_keep_alive(file['file_id'])
+#             success_count += 1
+#         else:
+#             # Retry logic or mark expired could go here
+#             failed_count += 1
+#
+#     return jsonify({
+#         "success": True,
+#         "processed": len(active_files),
+#         "kept_alive": success_count,
+#         "failed": failed_count
+#     })
 
 
 if __name__ == '__main__':
