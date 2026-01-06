@@ -1467,17 +1467,6 @@ def admin_clear_all_mypack():
         return jsonify({"success": False, "error": str(e)}), 500
     return jsonify({"success": True, "accounts_cleared": count})
 
-@app.route('/gofile/keep-alive', methods=['POST'])
-def gofile_keep_alive():
-    """Trigger keep-alive for all active Gofile uploads."""
-    try:
-        # Assumes gofile_client has a function like this
-        result = gofile_client.keep_alive_all()
-        log_activity("info", "Gofile keep-alive triggered for all uploads.")
-        return jsonify({"success": True, "message": "Keep-alive triggered for all Gofile uploads.", "details": result})
-    except Exception as e:
-        log_activity("failed", f"Gofile keep-alive failed: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
 
 def _get_gofile_stats():
     """Helper to get and calculate Gofile stats."""
