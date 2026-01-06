@@ -15,6 +15,7 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from pyrogram import Client, enums
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import gofile_client
 
 app = Flask(__name__)
 
@@ -1466,6 +1467,69 @@ def admin_clear_all_mypack():
         return jsonify({"success": False, "error": str(e)}), 500
     return jsonify({"success": True, "accounts_cleared": count})
 
+@app.route('/gofile/keep-alive', methods=['POST'])
+def gofile_keep_alive():
+    """Trigger keep-alive for all active Gofile uploads."""
+    try:
+        # Assumes gofile_client has a function like this
+        result = gofile_client.keep_alive_all()
+        log_activity("info", "Gofile keep-alive triggered for all uploads.")
+        return jsonify({"success": True, "message": "Keep-alive triggered for all Gofile uploads.", "details": result})
+    except Exception as e:
+        log_activity("failed", f"Gofile keep-alive failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+def _get_gofile_stats():
+    """Helper to get and calculate Gofile stats."""
+    try:
+        uploads = db.get_active_gofile_uploads()
+        if not uploads:
+            return {
+                "total_files": 0,
+                "total_size_gb": 0,
+                "last_keep_alive": "Never",
+                "recent_uploads": []
+            }
+
+        total_files = len(uploads)
+        total_size_bytes = sum(u.get('size', 0) for u in uploads)
+        total_size_gb = round(total_size_bytes / (1024**3), 2)
+
+        last_keep_alive = "Never"
+        if uploads:
+            # Filter out None values before finding the max
+            keep_alive_dates = [u.get('last_kept_alive') for u in uploads if u.get('last_kept_alive')]
+            if keep_alive_dates:
+                last_keep_alive_ts = max(keep_alive_dates)
+                # Format it nicely
+                last_keep_alive = datetime.fromisoformat(last_keep_alive_ts).strftime('%Y-%m-%d %H:%M:%S')
+
+        # Get last 5 active uploads, sorted by creation time
+        recent_uploads = sorted(uploads, key=lambda u: u.get('created_at'), reverse=True)[:5]
+        recent_uploads_list = [
+            {
+                "filename": u.get('filename', 'N/A'),
+                "size": f"{round(u.get('size', 0) / (1024**2), 1)} MB",
+                "link": u.get('url', '#')
+            }
+            for u in recent_uploads
+        ]
+
+        return {
+            "total_files": total_files,
+            "total_size_gb": total_size_gb,
+            "last_keep_alive": last_keep_alive,
+            "recent_uploads": recent_uploads_list
+        }
+    except Exception as e:
+        print(f"Error getting Gofile stats: {e}")
+        return {
+            "total_files": 0,
+            "total_size_gb": 0,
+            "last_keep_alive": "Error",
+            "recent_uploads": []
+        }
+
 @app.route('/admin/api/status')
 def admin_api_status():
     """Get complete admin dashboard data from the database"""
@@ -1527,6 +1591,8 @@ def admin_api_status():
             total_data = f"{total_mb/1024:.1f} GB"
         else:
             total_data = f"{total_mb:.0f} MB"
+
+    gofile_stats = _get_gofile_stats()
     
     return jsonify({
         "server": {
@@ -1550,6 +1616,7 @@ def admin_api_status():
             "list": accounts_list,
             "total_remaining": total_remaining
         },
+        "gofile": gofile_stats,
         "sessions": sessions_list,
         "report": {
             "downloads": DAILY_STATS["downloads"],

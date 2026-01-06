@@ -83,6 +83,46 @@
             </div>
         </section>
 
+        <!-- Gofile Uploads Section -->
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">🚀 Gofile Uploads</h2>
+                <button class="btn btn-primary" onclick="triggerGofileKeepAlive()">📡 Trigger Keep-Alive</button>
+            </div>
+            <div class="cards">
+                <div class="card">
+                    <div class="card-icon">📂</div>
+                    <div class="card-value" id="gofileTotalFiles">0</div>
+                    <div class="card-label">Total Active Files</div>
+                </div>
+                <div class="card">
+                    <div class="card-icon">📦</div>
+                    <div class="card-value" id="gofileTotalSize">0 GB</div>
+                    <div class="card-label">Total Storage Used</div>
+                </div>
+                <div class="card">
+                    <div class="card-icon">⏱️</div>
+                    <div class="card-value" id="gofileLastKeepAlive">Never</div>
+                    <div class="card-label">Last Keep-Alive</div>
+                </div>
+            </div>
+            <div class="table-container" style="margin-top: 1rem;">
+                <h3 class="subsection-title">Recent Gofile Uploads</h3>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Filename</th>
+                            <th>Size</th>
+                            <th>Link</th>
+                        </tr>
+                    </thead>
+                    <tbody id="gofileUploadsTable">
+                        <!-- Populated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
         <!-- Test Magnet Section -->
         <section class="section">
             <h2 class="section-title">🧪 Test Magnet</h2>
@@ -292,6 +332,49 @@
                 });
             } else {
                 activityList.innerHTML = '<p class="empty-state">No recent activity</p>';
+            }
+
+            // Gofile Stats
+            if (data.gofile) {
+                document.getElementById('gofileTotalFiles').textContent = data.gofile.total_files || 0;
+                document.getElementById('gofileTotalSize').textContent = `${data.gofile.total_size_gb || 0} GB`;
+                document.getElementById('gofileLastKeepAlive').textContent = data.gofile.last_keep_alive || 'Never';
+
+                const gofileUploadsTable = document.getElementById('gofileUploadsTable');
+                gofileUploadsTable.innerHTML = '';
+                if (data.gofile.recent_uploads && data.gofile.recent_uploads.length > 0) {
+                    data.gofile.recent_uploads.forEach(upload => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${upload.filename}</td>
+                            <td>${upload.size}</td>
+                            <td><a href="${upload.link}" target="_blank">View</a></td>
+                        `;
+                        gofileUploadsTable.appendChild(row);
+                    });
+                } else {
+                    gofileUploadsTable.innerHTML = '<tr><td colspan="3" class="empty-state">No recent Gofile uploads</td></tr>';
+                }
+            }
+        }
+
+        // Trigger Gofile Keep-Alive
+        async function triggerGofileKeepAlive() {
+            if (!confirm('Are you sure you want to trigger keep-alive for all Gofile uploads?')) return;
+            try {
+                const response = await fetch('/gofile/keep-alive', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                if (data.success) {
+                    alert('✅ Gofile keep-alive triggered successfully!');
+                    refreshData();
+                } else {
+                    alert(`❌ Failed to trigger Gofile keep-alive: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Request failed: ${error.message}`);
             }
         }
 
