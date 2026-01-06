@@ -2207,35 +2207,77 @@ cleanup_thread.start()
 # ============================================================
 
 # ============================================================
-# GOFILE ROUTES
+# GOFILE INTEGRATION (LIGHTWEIGHT)
 # ============================================================
 
-# @app.route('/gofile/keep-alive', methods=['POST'])
-# def gofile_keep_alive():
-#     """Trigger keep-alive for all active Gofile uploads"""
-#     active_files = db.get_active_gofile_uploads()
-#     success_count = 0
-#     failed_count = 0
-#
-#     print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
-#
-#     for file in active_files:
-#         if not file.get('direct_link'):
-#             continue
-#
-#         if gofile_client.keep_alive(file['direct_link']):
-#             db.update_gofile_keep_alive(file['file_id'])
-#             success_count += 1
-#         else:
-#             # Retry logic or mark expired could go here
-#             failed_count += 1
-#
-#     return jsonify({
-#         "success": True,
-#         "processed": len(active_files),
-#         "kept_alive": success_count,
-#         "failed": failed_count
-#     })
+@app.route('/save-gofile-result', methods=['POST'])
+def save_gofile_result():
+    """Save Gofile upload result from external service to DB"""
+    data = request.json
+    if not data or not data.get('file_id'):
+        return jsonify({"success": False, "error": "Missing file_id"}), 400
+    
+    if 'server' not in data:
+        data['server'] = 'global'
+        
+    result = db.add_gofile_upload(data)
+    if result:
+        return jsonify({"success": True})
+    else:
+        return jsonify({"success": False, "error": "DB insert failed"}), 500
+
+@app.route('/gofile/status', methods=['GET'])
+def gofile_status_list():
+    """Get active Gofile uploads for dashboard"""
+    try:
+        active_files = db.get_active_gofile_uploads()
+        return jsonify({
+            "success": True,
+            "count": len(active_files),
+            "uploads": active_files
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/gofile/keep-alive', methods=['POST'])
+def gofile_keep_alive():
+    """Trigger lightweight keep-alive for all active Gofile uploads"""
+    active_files = db.get_active_gofile_uploads()
+    success_count = 0
+    failed_count = 0
+    
+    print(f"GOFILE: Starting lightweight keep-alive for {len(active_files)} files...", flush=True)
+    
+    for file in active_files:
+        file_id = file.get('file_id')
+        link = file.get('direct_link') or file.get('download_page')
+        
+        if not link:
+            continue
+            
+        try:
+            # 1-byte range request to trigger activity without downloading
+            headers = {"Range": "bytes=0-0"}
+            response = requests.get(link, headers=headers, stream=True, timeout=5)
+            
+            if response.status_code in [200, 206]:
+                db.update_gofile_keep_alive(file_id)
+                success_count += 1
+            else:
+                print(f"GOFILE: Keep-alive failed for {file_id} (Status: {response.status_code})", flush=True)
+                failed_count += 1
+            
+            response.close()
+        except Exception as e:
+            print(f"GOFILE: Keep-alive error for {file_id}: {e}", flush=True)
+            failed_count += 1
+            
+    return jsonify({
+        "success": True,
+        "processed": len(active_files),
+        "kept_alive": success_count,
+        "failed": failed_count
+    })
 
 
 if __name__ == '__main__':
