@@ -2269,18 +2269,37 @@ cleanup_thread.start()
 @app.route('/save-gofile-result', methods=['POST'])
 def save_gofile_result():
     """Save Gofile upload result from external service to DB"""
-    data = request.json
-    if not data or not data.get('file_id'):
-        return jsonify({"success": False, "error": "Missing file_id"}), 400
-    
-    if 'server' not in data:
-        data['server'] = 'global'
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"success": False, "error": "No JSON data"}), 400
+            
+        # Required field
+        if not data.get('file_id'):
+            return jsonify({"success": False, "error": "Missing file_id"}), 400
         
-    result = db.add_gofile_upload(data)
-    if result:
-        return jsonify({"success": True})
-    else:
-        return jsonify({"success": False, "error": "DB insert failed"}), 500
+        # Defaults
+        if 'server' not in data:
+            data['server'] = 'global'
+            
+        # Smart fallback for download page
+        # If download_page missing, try to construct it from folder_code
+        if not data.get('download_page') and data.get('folder_code'):
+            data['download_page'] = f"https://gofile.io/d/{data['folder_code']}"
+            
+        # Call DB
+        result = db.add_gofile_upload(data)
+        
+        if result:
+            print(f"DB: Saved Gofile upload {data.get('file_id')}")
+            return jsonify({"success": True})
+        else:
+            print(f"DB: Failed to save Gofile upload {data.get('file_id')}")
+            return jsonify({"success": False, "error": "DB insert failed"}), 500
+            
+    except Exception as e:
+        print(f"DB ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/gofile/status', methods=['GET'])
 def gofile_status_list():
