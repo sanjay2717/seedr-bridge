@@ -2316,99 +2316,74 @@ def gofile_status_list():
 
 @app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
-    """Trigger robust keep-alive by checking the parent folder."""
+    """Trigger robust keep-alive by calling the proxy."""
     active_files = db.get_active_gofile_uploads()
     success_count = 0
     failed_count = 0
-    expired_count = 0
     
-    token = os.environ.get("GOFILE_TOKEN")
-    if not token:
-        print("GOFILE ERROR: Missing GOFILE_TOKEN for keep-alive lookup", flush=True)
-        return jsonify({"success": False, "error": "Missing GOFILE_TOKEN"}), 500
+    proxy_url = "https://bangerman111-myfiles.hf.space/check-file"
+    api_key = "mufiles-321"
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": api_key
+    }
 
-    print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
-    
-    # Group files by folder_id to make fewer API calls
-    folders_to_check = {}
+    print(f"GOFILE: Starting keep-alive for {len(active_files)} files via proxy...", flush=True)
+
     for file in active_files:
+        file_id = file.get('file_id')
         folder_id = file.get('folder_id')
-        if folder_id:
-            if folder_id not in folders_to_check:
-                folders_to_check[folder_id] = []
-            folders_to_check[folder_id].append(file)
 
-    for folder_id, files_in_folder in folders_to_check.items():
+        if not file_id or not folder_id:
+            print(f"GOFILE: Skipping file with missing file_id or folder_id. Data: {file}", flush=True)
+            failed_count += 1
+            continue
+
+        payload = {
+            "file_id": file_id,
+            "folder_id": folder_id
+        }
+
         try:
-            api_url = f"https://api.gofile.io/contents/{folder_id}?wt=401ok"
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Cookie": f"accountToken={token}"
-            }
-            
-            api_resp = requests.get(api_url, headers=headers, timeout=15)
+            response = requests.post(proxy_url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
 
-            if api_resp.status_code == 404:
-                print(f"GOFILE: Folder {folder_id} not found (404). Marking {len(files_in_folder)} files as expired.", flush=True)
-                for file_to_update in files_in_folder:
-                    db.mark_gofile_upload_as_expired(file_to_update['file_id'])
-                expired_count += len(files_in_folder)
-                continue
+            try:
+                data = response.json()
+                status = data.get("status")
 
-            if api_resp.status_code != 200:
-                print(f"GOFILE: API check failed for folder {folder_id} (Status: {api_resp.status_code})", flush=True)
-                failed_count += len(files_in_folder)
-                continue
-            
-            data = api_resp.json()
-
-            if data.get("status") != "ok" or not data.get("data", {}).get("children"):
-                print(f"GOFILE: Bad or empty API response for folder {folder_id}. Response: {data}", flush=True)
-                failed_count += len(files_in_folder)
-                continue
-
-            children = data["data"]["children"]
-
-            for file_to_check in files_in_folder:
-                file_id = file_to_check['file_id']
-                
-                if file_id in children:
-                    child_data = children[file_id]
-                    if child_data.get("link"):
-                        fresh_link = child_data["link"]
-                        try:
-                            ping_headers = {"Range": "bytes=0-0"}
-                            ping_resp = requests.head(fresh_link, headers=ping_headers, timeout=10, allow_redirects=True)
-                            
-                            if ping_resp.status_code in [200, 206]:
-                                db.update_gofile_keep_alive(file_id)
-                                success_count += 1
-                                print(f"GOFILE: Refreshed {file_id} in folder {folder_id}", flush=True)
-                            else:
-                                print(f"GOFILE: Ping failed for {file_id} with status {ping_resp.status_code}", flush=True)
-                                failed_count += 1
-                        except requests.exceptions.RequestException as ping_exc:
-                            print(f"GOFILE: Ping request failed for {file_id}: {ping_exc}", flush=True)
-                            failed_count += 1
-                    else:
-                        print(f"GOFILE: File {file_id} found in folder {folder_id} but has no link.", flush=True)
-                        failed_count += 1
+                if status == "alive":
+                    db.update_gofile_keep_alive(file_id)
+                    success_count += 1
+                    print(f"GOFILE: Refreshed {file_id} successfully.", flush=True)
+                elif status == "missing":
+                    print(f"GOFILE WARNING: File {file_id} reported as missing by proxy.", flush=True)
+                    # Optionally, mark as expired here if desired
+                    # db.mark_gofile_upload_as_expired(file_id)
+                    failed_count += 1
+                elif status == "error":
+                    error_detail = data.get("error", "No detail provided")
+                    print(f"GOFILE ERROR: Proxy returned an error for {file_id}: {error_detail}", flush=True)
+                    failed_count += 1
                 else:
-                    # File not in folder, mark as expired
-                    print(f"GOFILE: File {file_id} not found in folder {folder_id}. Marking as expired.", flush=True)
-                    db.mark_gofile_upload_as_expired(file_id)
-                    expired_count += 1
+                    print(f"GOFILE ERROR: Unknown status '{status}' from proxy for {file_id}.", flush=True)
+                    failed_count += 1
 
-        except Exception as e:
-            print(f"GOFILE: Error processing folder {folder_id}: {e}", flush=True)
-            failed_count += len(files_in_folder)
-            
+            except json.JSONDecodeError:
+                print(f"GOFILE ERROR: Failed to decode JSON response from proxy for {file_id}. Response: {response.text}", flush=True)
+                failed_count += 1
+
+        except requests.exceptions.RequestException as e:
+            print(f"GOFILE ERROR: Request to proxy failed for {file_id}: {e}", flush=True)
+            failed_count += 1
+
+    print(f"GOFILE: Keep-alive process finished. Success: {success_count}, Failed: {failed_count}", flush=True)
+    
     return jsonify({
         "success": True,
         "processed": len(active_files),
         "kept_alive": success_count,
-        "failed": failed_count,
-        "expired": expired_count
+        "failed": failed_count
     })
 
 if __name__ == '__main__':
