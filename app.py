@@ -2314,77 +2314,83 @@ def gofile_status_list():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
-    """Trigger robust keep-alive by calling the proxy."""
-    active_files = db.get_active_gofile_uploads()
-    success_count = 0
-    failed_count = 0
+    """Scheduled job to keep Gofile links alive."""
+    print("GOFILE: Starting keep-alive job...", flush=True)
     
-    proxy_url = "https://bangerman111-myfiles.hf.space/check-file"
-    api_key = "mufiles-321"
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": api_key
-    }
+    try:
+        files = db.get_active_gofile_uploads()
+        if not files:
+            print("GOFILE: No active files to keep alive.", flush=True)
+            return
 
-    print(f"GOFILE: Starting keep-alive for {len(active_files)} files via proxy...", flush=True)
-
-    for file in active_files:
-        file_id = file.get('file_id')
-        folder_id = file.get('folder_id')
-
-        if not file_id or not folder_id:
-            print(f"GOFILE: Skipping file with missing file_id or folder_id. Data: {file}", flush=True)
-            failed_count += 1
-            continue
-
-        payload = {
-            "file_id": file_id,
-            "folder_id": folder_id
+        success_count = 0
+        failed_count = 0
+        
+        proxy_url = "https://bangerman111-myfiles.hf.space/check-file"
+        api_key = "mufiles-321"
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": api_key
         }
 
-        try:
-            response = requests.post(proxy_url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        for file in files:
+            file_id = file.get('file_id')
+            folder_code = file.get('folder_code')
+
+            if not file_id or not folder_code:
+                print(f"GOFILE: Skipping file with missing file_id or folder_code. DB Record ID: {file.get('id')}", flush=True)
+                failed_count += 1
+                continue
+
+            payload = {
+                "file_id": file_id,
+                "folder_code": folder_code
+            }
 
             try:
-                data = response.json()
-                status = data.get("status")
+                response = requests.post(proxy_url, headers=headers, json=payload, timeout=45)
+                response.raise_for_status()
+                
+                status_data = response.json()
+                status = status_data.get('status')
 
-                if status == "alive":
+                if status == 'alive':
+                    # If alive, update the database
                     db.update_gofile_keep_alive(file_id)
                     success_count += 1
-                    print(f"GOFILE: Refreshed {file_id} successfully.", flush=True)
-                elif status == "missing":
-                    print(f"GOFILE WARNING: File {file_id} reported as missing by proxy.", flush=True)
-                    # Optionally, mark as expired here if desired
-                    # db.mark_gofile_upload_as_expired(file_id)
+                    print(f"GOFILE: Successfully kept alive: {file_id}", flush=True)
+                
+                elif status == 'missing':
+                    # If missing, mark as expired in the database
+                    print(f"GOFILE: File missing, marking as expired: {file_id}", flush=True)
+                    db.expire_gofile_upload(file_id, "File missing from Gofile folder.")
                     failed_count += 1
-                elif status == "error":
-                    error_detail = data.get("error", "No detail provided")
-                    print(f"GOFILE ERROR: Proxy returned an error for {file_id}: {error_detail}", flush=True)
+
+                elif status == 'error':
+                    # Log the error from the proxy
+                    error_message = status_data.get('message', 'No message provided.')
+                    print(f"GOFILE: Proxy error for {file_id}: {error_message}", flush=True)
                     failed_count += 1
+                
                 else:
-                    print(f"GOFILE ERROR: Unknown status '{status}' from proxy for {file_id}.", flush=True)
+                    print(f"GOFILE: Unknown status '{status}' for {file_id}", flush=True)
                     failed_count += 1
 
-            except json.JSONDecodeError:
-                print(f"GOFILE ERROR: Failed to decode JSON response from proxy for {file_id}. Response: {response.text}", flush=True)
+            except requests.exceptions.Timeout:
+                print(f"GOFILE: Timeout checking status for {file_id}", flush=True)
                 failed_count += 1
+            except requests.exceptions.RequestException as e:
+                print(f"GOFILE: Request failed for {file_id}: {e}", flush=True)
+                failed_count += 1
+            except json.JSONDecodeError:
+                print(f"GOFILE: Failed to decode JSON response for {file_id}", flush=True)
+                failed_count += 1
+        
+        print(f"GOFILE: Keep-alive job finished. Success: {success_count}, Failed: {failed_count}", flush=True)
 
-        except requests.exceptions.RequestException as e:
-            print(f"GOFILE ERROR: Request to proxy failed for {file_id}: {e}", flush=True)
-            failed_count += 1
-
-    print(f"GOFILE: Keep-alive process finished. Success: {success_count}, Failed: {failed_count}", flush=True)
-    
-    return jsonify({
-        "success": True,
-        "processed": len(active_files),
-        "kept_alive": success_count,
-        "failed": failed_count
-    })
+    except Exception as e:
+        print(f"GOFILE: An unexpected error occurred in keep-alive job: {e}", flush=True)
 
 if __name__ == '__main__':
     print("=" * 60, flush=True)
