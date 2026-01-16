@@ -2314,6 +2314,7 @@ def gofile_status_list():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
     """Scheduled job to keep Gofile links alive."""
     print("GOFILE: Starting keep-alive job...", flush=True)
