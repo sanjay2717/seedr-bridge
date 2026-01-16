@@ -2316,80 +2316,99 @@ def gofile_status_list():
 
 @app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
-    """Trigger robust keep-alive by fetching fresh links"""
+    """Trigger robust keep-alive by checking the parent folder."""
     active_files = db.get_active_gofile_uploads()
     success_count = 0
     failed_count = 0
+    expired_count = 0
     
-    # Get Token from Env (Required for API lookup)
     token = os.environ.get("GOFILE_TOKEN")
     if not token:
         print("GOFILE ERROR: Missing GOFILE_TOKEN for keep-alive lookup", flush=True)
-        return jsonify({"success": False, "error": "Missing token"}), 500
+        return jsonify({"success": False, "error": "Missing GOFILE_TOKEN"}), 500
 
     print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
     
+    # Group files by folder_id to make fewer API calls
+    folders_to_check = {}
     for file in active_files:
-        file_id = file.get('file_id')
-        
+        folder_id = file.get('folder_id')
+        if folder_id:
+            if folder_id not in folders_to_check:
+                folders_to_check[folder_id] = []
+            folders_to_check[folder_id].append(file)
+
+    for folder_id, files_in_folder in folders_to_check.items():
         try:
-            # Step 1: Get fresh link from API
-            api_url = f"https://api.gofile.io/contents/{file_id}?wt=401ok"
-            api_headers = {"Authorization": f"Bearer {token}"}
-            api_cookies = {"accountToken": token}
+            api_url = f"https://api.gofile.io/contents/{folder_id}?wt=401ok"
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Cookie": f"accountToken={token}"
+            }
             
-            api_resp = requests.get(api_url, headers=api_headers, cookies=api_cookies, timeout=10)
-            
-            if api_resp.status_code != 200:
-                print(f"GOFILE: API check failed for {file_id} (Status: {api_resp.status_code})", flush=True)
-                # If 404/403, maybe mark as expired?
-                failed_count += 1
+            api_resp = requests.get(api_url, headers=headers, timeout=15)
+
+            if api_resp.status_code == 404:
+                print(f"GOFILE: Folder {folder_id} not found (404). Marking {len(files_in_folder)} files as expired.", flush=True)
+                for file_to_update in files_in_folder:
+                    db.mark_gofile_upload_as_expired(file_to_update['file_id'])
+                expired_count += len(files_in_folder)
                 continue
 
-            data = api_resp.json()
+            if api_resp.status_code != 200:
+                print(f"GOFILE: API check failed for folder {folder_id} (Status: {api_resp.status_code})", flush=True)
+                failed_count += len(files_in_folder)
+                continue
             
-            # Step 2: Extract direct link
-            # Structure: data -> data -> children -> {file_id} -> link
-            if data.get("status") == "ok" and data.get("data", {}).get("children"):
-                children = data["data"]["children"]
-                # The file itself is the child
-                child_data = children.get(file_id)
+            data = api_resp.json()
+
+            if data.get("status") != "ok" or not data.get("data", {}).get("children"):
+                print(f"GOFILE: Bad or empty API response for folder {folder_id}. Response: {data}", flush=True)
+                failed_count += len(files_in_folder)
+                continue
+
+            children = data["data"]["children"]
+
+            for file_to_check in files_in_folder:
+                file_id = file_to_check['file_id']
                 
-                if child_data and child_data.get("link"):
-                    fresh_link = child_data["link"]
-                    
-                    # Step 3: Ping the fresh link
-                    ping_headers = {
-                        "Range": "bytes=0-0",
-                        "Authorization": f"Bearer {token}"
-                    }
-                    ping_cookies = {"accountToken": token}
-                    ping_resp = requests.get(fresh_link, headers=ping_headers, cookies=ping_cookies, stream=True, timeout=5)
-                    ping_resp.close()
-                    
-                    if ping_resp.status_code in [200, 206]:
-                        db.update_gofile_keep_alive(file_id)
-                        success_count += 1
-                        print(f"GOFILE: Refreshed {file_id}", flush=True)
+                if file_id in children:
+                    child_data = children[file_id]
+                    if child_data.get("link"):
+                        fresh_link = child_data["link"]
+                        try:
+                            ping_headers = {"Range": "bytes=0-0"}
+                            ping_resp = requests.head(fresh_link, headers=ping_headers, timeout=10, allow_redirects=True)
+                            
+                            if ping_resp.status_code in [200, 206]:
+                                db.update_gofile_keep_alive(file_id)
+                                success_count += 1
+                                print(f"GOFILE: Refreshed {file_id} in folder {folder_id}", flush=True)
+                            else:
+                                print(f"GOFILE: Ping failed for {file_id} with status {ping_resp.status_code}", flush=True)
+                                failed_count += 1
+                        except requests.exceptions.RequestException as ping_exc:
+                            print(f"GOFILE: Ping request failed for {file_id}: {ping_exc}", flush=True)
+                            failed_count += 1
                     else:
-                        print(f"GOFILE: Ping failed {ping_resp.status_code}", flush=True)
+                        print(f"GOFILE: File {file_id} found in folder {folder_id} but has no link.", flush=True)
                         failed_count += 1
                 else:
-                    print(f"GOFILE: No link found in API for {file_id}", flush=True)
-                    failed_count += 1
-            else:
-                print(f"GOFILE: Bad API response for {file_id}", flush=True)
-                failed_count += 1
-                
+                    # File not in folder, mark as expired
+                    print(f"GOFILE: File {file_id} not found in folder {folder_id}. Marking as expired.", flush=True)
+                    db.mark_gofile_upload_as_expired(file_id)
+                    expired_count += 1
+
         except Exception as e:
-            print(f"GOFILE: Error processing {file_id}: {e}", flush=True)
-            failed_count += 1
+            print(f"GOFILE: Error processing folder {folder_id}: {e}", flush=True)
+            failed_count += len(files_in_folder)
             
     return jsonify({
         "success": True,
         "processed": len(active_files),
         "kept_alive": success_count,
-        "failed": failed_count
+        "failed": failed_count,
+        "expired": expired_count
     })
 
 if __name__ == '__main__':

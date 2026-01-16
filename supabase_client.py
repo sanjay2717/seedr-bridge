@@ -252,6 +252,23 @@ class SupabaseDB:
             print(f"❌ DB Error (update_gofile_keep_alive): {e}")
             return False
 
+    def mark_gofile_upload_as_expired(self, file_id: str) -> bool:
+        """
+        Marks a Gofile upload as 'expired'.
+        """
+        try:
+            self.client.table('gofile_uploads').update({
+                'status': 'expired',
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }).eq('file_id', file_id).execute()
+            
+            print(f"🔄 Gofile status set to EXPIRED for: {file_id}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ DB Error (mark_gofile_upload_as_expired): {e}")
+            return False
+
     def get_gofile_by_file_id(self, file_id: str) -> Optional[Dict]:
         """
         Get single Gofile record by file_id.
