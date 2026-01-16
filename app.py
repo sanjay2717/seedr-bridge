@@ -2345,6 +2345,8 @@ def gofile_keep_alive():
         for file in files:
             file_id = file.get('file_id')
             folder_code = file.get('folder_code')
+            server = file.get('server')
+            filename = file.get('filename')
 
             if not file_id or not folder_code:
                 print(f"GOFILE: Skipping file with missing file_id or folder_code. DB Record ID: {file.get('id')}", flush=True)
@@ -2353,7 +2355,9 @@ def gofile_keep_alive():
 
             payload = {
                 "file_id": file_id,
-                "folder_code": folder_code
+                "folder_code": folder_code,
+                "server": server,
+                "file_name": filename
             }
 
             try:
