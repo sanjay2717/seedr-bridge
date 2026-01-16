@@ -2336,8 +2336,9 @@ def gofile_keep_alive():
             # Step 1: Get fresh link from API
             api_url = f"https://api.gofile.io/contents/{file_id}?wt=401ok"
             api_headers = {"Authorization": f"Bearer {token}"}
+            api_cookies = {"accountToken": token}
             
-            api_resp = requests.get(api_url, headers=api_headers, timeout=10)
+            api_resp = requests.get(api_url, headers=api_headers, cookies=api_cookies, timeout=10)
             
             if api_resp.status_code != 200:
                 print(f"GOFILE: API check failed for {file_id} (Status: {api_resp.status_code})", flush=True)
@@ -2358,8 +2359,12 @@ def gofile_keep_alive():
                     fresh_link = child_data["link"]
                     
                     # Step 3: Ping the fresh link
-                    ping_headers = {"Range": "bytes=0-0"}
-                    ping_resp = requests.get(fresh_link, headers=ping_headers, stream=True, timeout=5)
+                    ping_headers = {
+                        "Range": "bytes=0-0",
+                        "Authorization": f"Bearer {token}"
+                    }
+                    ping_cookies = {"accountToken": token}
+                    ping_resp = requests.get(fresh_link, headers=ping_headers, cookies=ping_cookies, stream=True, timeout=5)
                     ping_resp.close()
                     
                     if ping_resp.status_code in [200, 206]:
