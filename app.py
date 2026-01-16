@@ -2319,15 +2319,22 @@ def gofile_keep_alive():
     """Scheduled job to keep Gofile links alive."""
     print("GOFILE: Starting keep-alive job...", flush=True)
     
+    files = []
+    success_count = 0
+    failed_count = 0
+
     try:
         files = db.get_active_gofile_uploads()
         if not files:
             print("GOFILE: No active files to keep alive.", flush=True)
-            return
+            return {
+                "success": True,
+                "processed": 0,
+                "kept_alive": 0,
+                "failed": 0,
+                "message": "No active files to keep alive."
+            }
 
-        success_count = 0
-        failed_count = 0
-        
         proxy_url = "https://bangerman111-myfiles.hf.space/check-file"
         api_key = "mufiles-321"
         headers = {
@@ -2357,19 +2364,16 @@ def gofile_keep_alive():
                 status = status_data.get('status')
 
                 if status == 'alive':
-                    # If alive, update the database
                     db.update_gofile_keep_alive(file_id)
                     success_count += 1
                     print(f"GOFILE: Successfully kept alive: {file_id}", flush=True)
                 
                 elif status == 'missing':
-                    # If missing, mark as expired in the database
                     print(f"GOFILE: File missing, marking as expired: {file_id}", flush=True)
                     db.expire_gofile_upload(file_id, "File missing from Gofile folder.")
                     failed_count += 1
 
                 elif status == 'error':
-                    # Log the error from the proxy
                     error_message = status_data.get('message', 'No message provided.')
                     print(f"GOFILE: Proxy error for {file_id}: {error_message}", flush=True)
                     failed_count += 1
@@ -2389,9 +2393,23 @@ def gofile_keep_alive():
                 failed_count += 1
         
         print(f"GOFILE: Keep-alive job finished. Success: {success_count}, Failed: {failed_count}", flush=True)
+        
+        return {
+            "success": True,
+            "processed": len(files),
+            "kept_alive": success_count,
+            "failed": failed_count
+        }
 
     except Exception as e:
         print(f"GOFILE: An unexpected error occurred in keep-alive job: {e}", flush=True)
+        return {
+            "success": False, 
+            "error": str(e),
+            "processed": len(files),
+            "kept_alive": success_count,
+            "failed": failed_count
+        }
 
 if __name__ == '__main__':
     print("=" * 60, flush=True)
