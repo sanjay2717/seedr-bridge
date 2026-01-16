@@ -2316,35 +2316,68 @@ def gofile_status_list():
 
 @app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
-    """Trigger lightweight keep-alive for all active Gofile uploads"""
+    """Trigger robust keep-alive by fetching fresh links"""
     active_files = db.get_active_gofile_uploads()
     success_count = 0
     failed_count = 0
     
-    print(f"GOFILE: Starting lightweight keep-alive for {len(active_files)} files...", flush=True)
+    # Get Token from Env (Required for API lookup)
+    token = os.environ.get("GOFILE_TOKEN")
+    if not token:
+        print("GOFILE ERROR: Missing GOFILE_TOKEN for keep-alive lookup", flush=True)
+        return jsonify({"success": False, "error": "Missing token"}), 500
+
+    print(f"GOFILE: Starting keep-alive for {len(active_files)} files...", flush=True)
     
     for file in active_files:
         file_id = file.get('file_id')
-        link = file.get('direct_link') or file.get('download_page')
         
-        if not link:
-            continue
-            
         try:
-            # 1-byte range request to trigger activity without downloading
-            headers = {"Range": "bytes=0-0"}
-            response = requests.get(link, headers=headers, stream=True, timeout=5)
+            # Step 1: Get fresh link from API
+            api_url = f"https://api.gofile.io/contents/{file_id}?wt=401ok"
+            api_headers = {"Authorization": f"Bearer {token}"}
             
-            if response.status_code in [200, 206]:
-                db.update_gofile_keep_alive(file_id)
-                success_count += 1
-            else:
-                print(f"GOFILE: Keep-alive failed for {file_id} (Status: {response.status_code})", flush=True)
+            api_resp = requests.get(api_url, headers=api_headers, timeout=10)
+            
+            if api_resp.status_code != 200:
+                print(f"GOFILE: API check failed for {file_id} (Status: {api_resp.status_code})", flush=True)
+                # If 404/403, maybe mark as expired?
                 failed_count += 1
+                continue
+
+            data = api_resp.json()
             
-            response.close()
+            # Step 2: Extract direct link
+            # Structure: data -> data -> children -> {file_id} -> link
+            if data.get("status") == "ok" and data.get("data", {}).get("children"):
+                children = data["data"]["children"]
+                # The file itself is the child
+                child_data = children.get(file_id)
+                
+                if child_data and child_data.get("link"):
+                    fresh_link = child_data["link"]
+                    
+                    # Step 3: Ping the fresh link
+                    ping_headers = {"Range": "bytes=0-0"}
+                    ping_resp = requests.get(fresh_link, headers=ping_headers, stream=True, timeout=5)
+                    ping_resp.close()
+                    
+                    if ping_resp.status_code in [200, 206]:
+                        db.update_gofile_keep_alive(file_id)
+                        success_count += 1
+                        print(f"GOFILE: Refreshed {file_id}", flush=True)
+                    else:
+                        print(f"GOFILE: Ping failed {ping_resp.status_code}", flush=True)
+                        failed_count += 1
+                else:
+                    print(f"GOFILE: No link found in API for {file_id}", flush=True)
+                    failed_count += 1
+            else:
+                print(f"GOFILE: Bad API response for {file_id}", flush=True)
+                failed_count += 1
+                
         except Exception as e:
-            print(f"GOFILE: Keep-alive error for {file_id}: {e}", flush=True)
+            print(f"GOFILE: Error processing {file_id}: {e}", flush=True)
             failed_count += 1
             
     return jsonify({
@@ -2353,7 +2386,6 @@ def gofile_keep_alive():
         "kept_alive": success_count,
         "failed": failed_count
     })
-
 
 if __name__ == '__main__':
     print("=" * 60, flush=True)
