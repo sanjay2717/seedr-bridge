@@ -6,15 +6,15 @@ Checks database before downloading to avoid duplicate downloads.
 import re
 import time
 import requests
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Callable
 from supabase_client import db
 
 # ============================================
-# CONFIGURATION (Import from app.py or define here)
+# CONFIGURATION
 # ============================================
 
 PIKPAK_API_DRIVE = "https://api-drive.mypikpak.com"
-PIKPAK_CLIENT_ID = "YNxT9w7GMdWvEOKa"  # Update if different
+PIKPAK_CLIENT_ID = "YNxT9w7GMdWvEOKa"
 
 
 # ============================================
@@ -25,6 +25,8 @@ def extract_hash(magnet_link: str) -> Optional[str]:
     """
     Extracts the BTIH hash from a magnet link and normalizes it.
     """
+    if not magnet_link:
+        return None
     match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet_link, re.IGNORECASE)
     if match:
         return match.group(1).upper()
@@ -70,9 +72,10 @@ def check_smart_cache(magnet_link: str) -> Optional[Dict]:
 
 
 def save_to_smart_cache(
-    magnet_link: str,
     file_id: str,
     account_id: int,
+    magnet_link: str = None,
+    magnet_hash: str = None,
     file_name: str = None,
     file_size: int = None,
     file_hash: str = None,
@@ -83,25 +86,33 @@ def save_to_smart_cache(
     Call this AFTER successful pikpak_add_magnet().
     
     Args:
-        magnet_link: Original magnet URL
-        file_id: PikPak file ID
-        account_id: Which account has this file
+        file_id: PikPak file ID (required)
+        account_id: Which account has this file (required)
+        magnet_link: Original magnet URL (optional if magnet_hash provided)
+        magnet_hash: Direct hash (optional if magnet_link provided)
         file_name: Name of the file
         file_size: Size in bytes
-        file_hash: PikPak's file hash (from params.url)
+        file_hash: PikPak's file hash
         parent_id: Parent folder ID
         
     Returns:
         True if saved, False if error
     """
-    magnet_hash = extract_hash(magnet_link)
+    # Get hash from either source
+    if magnet_hash:
+        final_hash = magnet_hash.upper()
+    elif magnet_link:
+        final_hash = extract_hash(magnet_link)
+    else:
+        print("⚠️ Smart Cache: No hash provided, not saving")
+        return False
     
-    if not magnet_hash:
+    if not final_hash:
         print("⚠️ Smart Cache: Could not extract hash, not saving")
         return False
     
     data = {
-        'magnet_hash': magnet_hash,
+        'magnet_hash': final_hash,
         'file_id': file_id,
         'account_id': account_id,
         'file_name': file_name,
@@ -120,7 +131,7 @@ def save_to_smart_cache(
 
 
 # ============================================
-# FULL SYNC FUNCTION
+# PIKPAK API FUNCTIONS (For Sync)
 # ============================================
 
 def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict) -> List[Dict]:
@@ -184,12 +195,18 @@ def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict) -> 
     return all_files
 
 
-def pikpak_get_file_hash(file_id: str, account: Dict, tokens: Dict) -> Optional[str]:
+def pikpak_get_file_info(file_id: str, account: Dict, tokens: Dict) -> Optional[Dict]:
     """
-    Get file hash from PikPak file info.
+    Get detailed file info from PikPak API.
+    This returns the full file object including params.url with magnet hash.
     
+    Args:
+        file_id: PikPak file ID
+        account: Account dict with device_id
+        tokens: Auth tokens with access_token
+        
     Returns:
-        Hash string or None
+        Full file info dict or None on error
     """
     headers = {
         "Authorization": f"Bearer {tokens['access_token']}",
@@ -201,47 +218,78 @@ def pikpak_get_file_hash(file_id: str, account: Dict, tokens: Dict) -> Optional[
     try:
         url = f"{PIKPAK_API_DRIVE}/drive/v1/files/{file_id}"
         response = requests.get(url, headers=headers, timeout=30)
-        data = response.json()
         
-        # Try to extract hash from params.url
-        params_url = data.get("params", {}).get("url", "")
-        
-        if params_url:
-            # Extract hash from magnet link in params.url
-            hash_match = re.search(r'btih:([a-fA-F0-9]+)', params_url)
-            if hash_match:
-                return hash_match.group(1).upper()
-        
-        # Fallback to hash or md5 field
-        return data.get("hash") or data.get("md5")
-        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"   ⚠️ API returned {response.status_code} for file {file_id}")
+            return None
+            
     except Exception as e:
-        print(f"   ⚠️ Could not get hash for {file_id}: {e}")
+        print(f"   ⚠️ Could not get info for {file_id}: {e}")
         return None
 
+
+def extract_hash_from_file_info(file_info: Dict) -> Optional[str]:
+    """
+    Extract magnet hash from PikPak file info response.
+    
+    Args:
+        file_info: Full file info dict from pikpak_get_file_info
+        
+    Returns:
+        Magnet hash (uppercase) or None
+    """
+    if not file_info:
+        return None
+    
+    # Try params.url first (contains magnet link)
+    params_url = file_info.get("params", {}).get("url", "")
+    
+    if params_url:
+        # Extract BTIH from magnet link
+        magnet_hash = extract_hash(params_url)
+        if magnet_hash:
+            return magnet_hash
+    
+    # Fallback: Try hash field
+    file_hash = file_info.get("hash")
+    if file_hash:
+        return file_hash.upper()
+    
+    # Fallback: Try md5 field
+    md5 = file_info.get("md5")
+    if md5:
+        return md5.upper()
+    
+    return None
+
+
+# ============================================
+# SYNC FUNCTIONS
+# ============================================
 
 def sync_account_to_cache(
     account: Dict,
     tokens: Dict,
-    login_func,
-    skip_hash_lookup: bool = False
+    login_func: Callable = None
 ) -> Dict:
     """
     Sync a single account's files to smart cache.
+    Fetches detailed info for each file to get magnet hash.
     
     Args:
         account: Account dict with id, email, my_pack_id, device_id
         tokens: Auth tokens
-        login_func: Function to call for login (from app.py)
-        skip_hash_lookup: If True, skip individual file hash lookups (faster but less accurate)
+        login_func: Function to call for login (not used, kept for compatibility)
         
     Returns:
-        Dict with stats: synced, trashed, errors
+        Dict with stats: synced, skipped, trashed, errors
     """
     account_id = account['id']
     my_pack_id = account.get('my_pack_id')
     
-    stats = {'synced': 0, 'trashed': 0, 'errors': 0}
+    stats = {'synced': 0, 'skipped': 0, 'trashed': 0, 'errors': 0}
     
     if not my_pack_id:
         print(f"   ⚠️ No my_pack_id for account {account_id}, skipping")
@@ -250,143 +298,215 @@ def sync_account_to_cache(
     print(f"📂 Syncing Account {account_id}: {account.get('email', 'Unknown')[:20]}...")
     
     try:
-        # Get all files from PikPak
+        # Step 1: Get all files from PikPak (basic info only)
         api_files = pikpak_list_files_paginated(my_pack_id, account, tokens)
         api_file_ids = set()
         
-        files_to_upsert = []
+        print(f"   🔍 Fetching detailed info for {len(api_files)} files...")
         
-        for file in api_files:
+        # Step 2: For each file, get detailed info and extract hash
+        for idx, file in enumerate(api_files):
             file_id = file.get('id')
+            file_name = file.get('name', 'Unknown')
             
             if not file_id:
                 continue
-                
+            
             api_file_ids.add(file_id)
             
-            # Get hash for this file
-            file_hash = None
-            magnet_hash = None
+            # Progress indicator
+            if (idx + 1) % 10 == 0:
+                print(f"   📊 Progress: {idx + 1}/{len(api_files)}")
             
-            if not skip_hash_lookup:
-                file_hash = pikpak_get_file_hash(file_id, account, tokens)
-                if file_hash:
-                    magnet_hash = file_hash
-                time.sleep(0.2)  # Rate limiting
-            
-            # If no hash found, use file_id as fallback magnet_hash
-            if not magnet_hash:
-                magnet_hash = f"FILEID_{file_id}"
-            
-            files_to_upsert.append({
-                'magnet_hash': magnet_hash,
-                'file_hash': file_hash,
-                'file_id': file_id,
-                'account_id': account_id,
-                'file_name': file.get('name'),
-                'file_size': int(file.get('size', 0)),
-                'parent_id': file.get('parent_id'),
-                'is_trash': False
-            })
+            try:
+                # Get detailed file info
+                file_info = pikpak_get_file_info(file_id, account, tokens)
+                
+                if not file_info:
+                    print(f"      ⚠️ Could not get info: {file_name[:30]}")
+                    stats['errors'] += 1
+                    continue
+                
+                # Extract magnet hash
+                magnet_hash = extract_hash_from_file_info(file_info)
+                
+                if not magnet_hash:
+                    print(f"      ⏭️ No hash found: {file_name[:30]}")
+                    stats['skipped'] += 1
+                    continue
+                
+                # Get file hash (separate from magnet hash)
+                file_hash = file_info.get("hash") or file_info.get("md5")
+                
+                # Save to cache
+                saved = save_to_smart_cache(
+                    file_id=file_id,
+                    account_id=account_id,
+                    magnet_hash=magnet_hash,
+                    file_name=file_name,
+                    file_size=int(file.get('size', 0)),
+                    file_hash=file_hash,
+                    parent_id=file.get('parent_id')
+                )
+                
+                if saved:
+                    stats['synced'] += 1
+                else:
+                    stats['errors'] += 1
+                
+                # Rate limiting (avoid API throttling)
+                time.sleep(0.3)
+                
+            except Exception as e:
+                print(f"      ❌ Error processing {file_name[:30]}: {e}")
+                stats['errors'] += 1
+                continue
         
-        # Bulk upsert to database
-        if files_to_upsert:
-            db.bulk_upsert_cache(files_to_upsert)
-            stats['synced'] = len(files_to_upsert)
-        
-        # Find deleted files (in DB but not in API)
+        # Step 3: Find deleted files (in DB but not in API)
         db_file_ids = set(db.get_cached_files_by_account(account_id))
         deleted_file_ids = db_file_ids - api_file_ids
         
         if deleted_file_ids:
             db.mark_cache_as_trash(account_id, list(deleted_file_ids))
             stats['trashed'] = len(deleted_file_ids)
+            print(f"   🗑️ Marked {len(deleted_file_ids)} deleted files as trash")
         
-        print(f"   ✅ Synced: {stats['synced']} | Trashed: {stats['trashed']}")
+        print(f"   ✅ Done! Synced: {stats['synced']} | Skipped: {stats['skipped']} | Trashed: {stats['trashed']} | Errors: {stats['errors']}")
         
     except Exception as e:
         print(f"   ❌ Error syncing account {account_id}: {e}")
-        stats['errors'] = 1
+        stats['errors'] += 1
     
     return stats
 
 
-def sync_all_accounts_to_cache(login_func, get_account_func) -> Dict:
+def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable = None) -> Dict:
     """
     Sync ALL accounts to smart cache.
     Call this on startup or after clear-trash.
     
     Args:
         login_func: Your pikpak_login function from app.py
-        get_account_func: Function to get all accounts
+        get_account_func: Not used, kept for compatibility
         
     Returns:
         Dict with total stats
     """
-    print("=" * 50)
-    print("🔄 SMART CACHE: Starting Full Sync")
-    print("=" * 50)
+    print("=" * 60)
+    print("🔄 SMART CACHE: Starting Full Sync (With Hash Lookup)")
+    print("=" * 60)
     
-    total_stats = {'synced': 0, 'trashed': 0, 'errors': 0, 'accounts': 0}
+    total_stats = {
+        'synced': 0,
+        'skipped': 0,
+        'trashed': 0,
+        'errors': 0,
+        'accounts': 0,
+        'accounts_failed': 0
+    }
     
     try:
-        # Get all active accounts from DB
-        # Fetch from both servers (1 and 2)
+        # Get all active accounts from DB (both servers)
         all_accounts = []
         all_accounts.extend(db.get_all_server_accounts(1))
         all_accounts.extend(db.get_all_server_accounts(2))
         
-        print(f"📊 Found {len(all_accounts)} accounts to sync")
+        print(f"📊 Found {len(all_accounts)} total accounts")
         
         for account in all_accounts:
+            account_id = account.get('id')
+            
+            # Skip inactive accounts
             if account.get('status') != 'active':
-                print(f"   ⏭️ Skipping inactive account {account['id']}")
+                print(f"   ⏭️ Skipping inactive account {account_id}")
                 continue
             
             # Ensure device_id is set
             account['device_id'] = account.get('current_device_id') or account.get('device_id')
             
+            if not account['device_id']:
+                print(f"   ⚠️ No device_id for account {account_id}, skipping")
+                total_stats['accounts_failed'] += 1
+                continue
+            
             try:
                 # Login to account
+                print(f"\n🔐 Logging into Account {account_id}...")
                 tokens = login_func(account)
                 
-                if not tokens:
-                    print(f"   ❌ Login failed for account {account['id']}")
-                    total_stats['errors'] += 1
+                if not tokens or not tokens.get('access_token'):
+                    print(f"   ❌ Login failed for account {account_id}")
+                    total_stats['accounts_failed'] += 1
                     continue
                 
                 # Sync this account
                 stats = sync_account_to_cache(
                     account=account,
                     tokens=tokens,
-                    login_func=login_func,
-                    skip_hash_lookup=True  # Faster sync, set False for accurate hashes
+                    login_func=login_func
                 )
                 
                 total_stats['synced'] += stats['synced']
+                total_stats['skipped'] += stats['skipped']
                 total_stats['trashed'] += stats['trashed']
                 total_stats['errors'] += stats['errors']
                 total_stats['accounts'] += 1
                 
                 # Rate limiting between accounts
-                time.sleep(1)
+                time.sleep(2)
                 
             except Exception as e:
-                print(f"   ❌ Error with account {account['id']}: {e}")
-                total_stats['errors'] += 1
+                print(f"   ❌ Error with account {account_id}: {e}")
+                total_stats['accounts_failed'] += 1
         
-        print("=" * 50)
+        print("\n" + "=" * 60)
         print(f"🎉 SMART CACHE: Sync Complete!")
-        print(f"   📊 Accounts: {total_stats['accounts']}")
-        print(f"   ✅ Synced: {total_stats['synced']} files")
-        print(f"   🗑️ Trashed: {total_stats['trashed']} files")
-        print(f"   ❌ Errors: {total_stats['errors']}")
-        print("=" * 50)
+        print(f"   📊 Accounts Synced: {total_stats['accounts']}")
+        print(f"   ❌ Accounts Failed: {total_stats['accounts_failed']}")
+        print(f"   ✅ Files Synced: {total_stats['synced']}")
+        print(f"   ⏭️ Files Skipped: {total_stats['skipped']}")
+        print(f"   🗑️ Files Trashed: {total_stats['trashed']}")
+        print(f"   ⚠️ Errors: {total_stats['errors']}")
+        print("=" * 60)
         
     except Exception as e:
         print(f"❌ SMART CACHE: Sync failed - {e}")
     
     return total_stats
+
+
+def sync_single_account(account_id: int, login_func: Callable) -> Dict:
+    """
+    Sync a single account by ID.
+    Useful for testing or targeted sync.
+    
+    Args:
+        account_id: Account ID to sync
+        login_func: Your pikpak_login function
+        
+    Returns:
+        Dict with stats
+    """
+    print(f"🔄 Syncing single account: {account_id}")
+    
+    # Get account from DB
+    all_accounts = db.get_all_server_accounts(1) + db.get_all_server_accounts(2)
+    account = next((a for a in all_accounts if a['id'] == account_id), None)
+    
+    if not account:
+        print(f"❌ Account {account_id} not found")
+        return {'error': 'Account not found'}
+    
+    account['device_id'] = account.get('current_device_id') or account.get('device_id')
+    
+    # Login
+    tokens = login_func(account)
+    if not tokens:
+        print(f"❌ Login failed for account {account_id}")
+        return {'error': 'Login failed'}
+    
+    # Sync
+    return sync_account_to_cache(account, tokens, login_func)
 
 
 # ============================================
