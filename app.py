@@ -18,6 +18,12 @@ from pyrogram import Client, enums
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import gofile_client
+from smart_cache import (
+    check_smart_cache,
+    save_to_smart_cache,
+    sync_all_accounts_to_cache,
+    get_cache_stats
+)
 
 app = Flask(__name__)
 
@@ -1368,6 +1374,14 @@ def admin_clear_trash(account_id):
 
         get_account_storage(account)
         
+        # Sync cache after clearing trash
+        try:
+            log_activity("info", "Trash cleared, starting cache sync.")
+            sync_thread = threading.Thread(target=sync_all_accounts_to_cache, kwargs={'login_func': pikpak_login})
+            sync_thread.start()
+        except Exception as sync_e:
+            print(f"CACHE [{SERVER_ID}]: Failed to start sync after trash clear: {sync_e}", flush=True)
+
         return jsonify({"success": True, "message": "Trash cleared"})
     except Exception as e:
         print(f"PIKPAK [{SERVER_ID}]: Failed to clear trash for account {account_id}: {e}", flush=True)
@@ -1628,6 +1642,28 @@ def admin_reset_quota(account_id):
             return jsonify({"success": False, "error": "DB operation failed"}), 500
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/admin/api/sync-cache', methods=['POST'])
+def admin_sync_cache():
+    """Sync all PikPak accounts to the smart cache"""
+    try:
+        # This can be a long-running process, so maybe run in a thread
+        sync_thread = threading.Thread(target=sync_all_accounts_to_cache, kwargs={'login_func': pikpak_login})
+        sync_thread.start()
+        log_activity("info", "Started full cache sync.")
+        return jsonify({"success": True, "message": "Cache sync started in background."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/admin/api/cache-stats', methods=['GET'])
+def admin_cache_stats():
+    """Get statistics for the smart cache"""
+    try:
+        stats = get_cache_stats()
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 # ============================================================
 # FLASK ROUTES
@@ -1953,6 +1989,22 @@ def add_magnet():
         
         if not magnet:
             return jsonify({"error": "Missing magnet parameter"}), 400
+
+        # Smart Cache Check
+        cached_file = check_smart_cache(magnet)
+        if cached_file:
+            print(f"CACHE [{SERVER_ID}]: ✅ Hit for magnet. Returning cached file.", flush=True)
+            log_activity("success", f"Cache Hit: {cached_file['file_name']}")
+            return jsonify({
+                "result": True,
+                "file_name": cached_file['file_name'],
+                "file_size": cached_file['size'],
+                "url": cached_file['direct_link'],
+                "account_used": cached_file['pikpak_account_id'],
+                "server": SERVER_ID,
+                "cached": True
+            })
+
         
         exhausted_accounts = []
         max_total_retries = 8
@@ -2028,6 +2080,16 @@ def add_magnet():
                 print(f"PIKPAK [{SERVER_ID}]: === ADD MAGNET SUCCESS ===", flush=True)
                 log_activity("success", f"Downloaded: {video_file.get('name', file_name)}")
                 update_daily_stats("downloads")
+
+                # Save to Smart Cache
+                save_to_smart_cache(
+                    magnet_link=magnet,
+                    file_name=video_file.get("name", file_name),
+                    direct_link=download_url,
+                    size=file_size,
+                    pikpak_account_id=account["id"],
+                    pikpak_file_id=video_file.get("id", folder_id)
+                )
                 
                 return jsonify({
                     "result": True,
