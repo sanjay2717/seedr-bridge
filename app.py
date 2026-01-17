@@ -2023,7 +2023,7 @@ def add_magnet():
             return jsonify({
                 "result": True,
                 "file_name": cached_file['file_name'],
-                "file_size": cached_file['size'],
+                "file_size": cached_file['file_size'],
                 "url": cached_file['direct_link'],
                 "account_used": cached_file['pikpak_account_id'],
                 "server": SERVER_ID,
