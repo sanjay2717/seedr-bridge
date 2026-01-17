@@ -14,7 +14,7 @@ from supabase_client import db
 # ============================================
 
 PIKPAK_API_DRIVE = "https://api-drive.mypikpak.com"
-PIKPAK_CLIENT_ID = "YNxT9w7GMdWvEOKa"
+PIKPAK_CLIENT_ID = "YUMx5nI8ZU8Ap8pm"
 
 
 # ============================================
@@ -134,7 +134,7 @@ def save_to_smart_cache(
 # PIKPAK API FUNCTIONS (For Sync)
 # ============================================
 
-def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict) -> List[Dict]:
+def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict, captcha_func: Callable = None) -> List[Dict]:
     """
     List ALL files in a folder with pagination support.
     
@@ -142,6 +142,7 @@ def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict) -> 
         parent_id: Folder ID to list
         account: Account dict with device_id
         tokens: Auth tokens with access_token
+        captcha_func: Function to generate captcha token (action, device_id, user_id)
         
     Returns:
         List of all file objects
@@ -150,10 +151,19 @@ def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict) -> 
     page_token = None
     page_count = 0
     
+    device_id = account.get('device_id', '')
+    user_id = tokens.get('user_id', '')
+    
+    # Generate captcha if function provided
+    captcha_token = ""
+    if captcha_func:
+        captcha_token = captcha_func("GET:/drive/v1/files", device_id, user_id)
+    
     headers = {
         "Authorization": f"Bearer {tokens['access_token']}",
         "X-Client-ID": PIKPAK_CLIENT_ID,
-        "X-Device-ID": account.get('device_id', ''),
+        "X-Device-ID": device_id,
+        "X-Captcha-Token": captcha_token,
         "Content-Type": "application/json"
     }
     
@@ -195,7 +205,7 @@ def pikpak_list_files_paginated(parent_id: str, account: Dict, tokens: Dict) -> 
     return all_files
 
 
-def pikpak_get_file_info(file_id: str, account: Dict, tokens: Dict) -> Optional[Dict]:
+def pikpak_get_file_info(file_id: str, account: Dict, tokens: Dict, captcha_func: Callable = None) -> Optional[Dict]:
     """
     Get detailed file info from PikPak API.
     This returns the full file object including params.url with magnet hash.
@@ -204,14 +214,23 @@ def pikpak_get_file_info(file_id: str, account: Dict, tokens: Dict) -> Optional[
         file_id: PikPak file ID
         account: Account dict with device_id
         tokens: Auth tokens with access_token
+        captcha_func: Function to generate captcha token
         
     Returns:
         Full file info dict or None on error
     """
+    device_id = account.get('device_id', '')
+    user_id = tokens.get('user_id', '')
+    
+    captcha_token = ""
+    if captcha_func:
+        captcha_token = captcha_func(f"GET:/drive/v1/files/{file_id}", device_id, user_id)
+
     headers = {
         "Authorization": f"Bearer {tokens['access_token']}",
         "X-Client-ID": PIKPAK_CLIENT_ID,
-        "X-Device-ID": account.get('device_id', ''),
+        "X-Device-ID": device_id,
+        "X-Captcha-Token": captcha_token,
         "Content-Type": "application/json"
     }
     
@@ -272,7 +291,8 @@ def extract_hash_from_file_info(file_info: Dict) -> Optional[str]:
 def sync_account_to_cache(
     account: Dict,
     tokens: Dict,
-    login_func: Callable = None
+    login_func: Callable = None,
+    captcha_func: Callable = None
 ) -> Dict:
     """
     Sync a single account's files to smart cache.
@@ -282,6 +302,7 @@ def sync_account_to_cache(
         account: Account dict with id, email, my_pack_id, device_id
         tokens: Auth tokens
         login_func: Function to call for login (not used, kept for compatibility)
+        captcha_func: Function to generate captcha token
         
     Returns:
         Dict with stats: synced, skipped, trashed, errors
@@ -299,7 +320,7 @@ def sync_account_to_cache(
     
     try:
         # Step 1: Get all files from PikPak (basic info only)
-        api_files = pikpak_list_files_paginated(my_pack_id, account, tokens)
+        api_files = pikpak_list_files_paginated(my_pack_id, account, tokens, captcha_func)
         api_file_ids = set()
         
         print(f"   🔍 Fetching detailed info for {len(api_files)} files...")
@@ -320,7 +341,7 @@ def sync_account_to_cache(
             
             try:
                 # Get detailed file info
-                file_info = pikpak_get_file_info(file_id, account, tokens)
+                file_info = pikpak_get_file_info(file_id, account, tokens, captcha_func)
                 
                 if not file_info:
                     print(f"      ⚠️ Could not get info: {file_name[:30]}")
@@ -380,7 +401,7 @@ def sync_account_to_cache(
     return stats
 
 
-def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable = None) -> Dict:
+def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable = None, captcha_func: Callable = None) -> Dict:
     """
     Sync ALL accounts to smart cache.
     Call this on startup or after clear-trash.
@@ -388,6 +409,7 @@ def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable 
     Args:
         login_func: Your pikpak_login function from app.py
         get_account_func: Not used, kept for compatibility
+        captcha_func: Function to generate captcha token
         
     Returns:
         Dict with total stats
@@ -443,7 +465,8 @@ def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable 
                 stats = sync_account_to_cache(
                     account=account,
                     tokens=tokens,
-                    login_func=login_func
+                    login_func=login_func,
+                    captcha_func=captcha_func
                 )
                 
                 total_stats['synced'] += stats['synced']
@@ -475,7 +498,7 @@ def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable 
     return total_stats
 
 
-def sync_single_account(account_id: int, login_func: Callable) -> Dict:
+def sync_single_account(account_id: int, login_func: Callable, captcha_func: Callable = None) -> Dict:
     """
     Sync a single account by ID.
     Useful for testing or targeted sync.
@@ -483,6 +506,7 @@ def sync_single_account(account_id: int, login_func: Callable) -> Dict:
     Args:
         account_id: Account ID to sync
         login_func: Your pikpak_login function
+        captcha_func: Function to generate captcha token
         
     Returns:
         Dict with stats
@@ -506,7 +530,7 @@ def sync_single_account(account_id: int, login_func: Callable) -> Dict:
         return {'error': 'Login failed'}
     
     # Sync
-    return sync_account_to_cache(account, tokens, login_func)
+    return sync_account_to_cache(account, tokens, login_func, captcha_func)
 
 
 # ============================================

@@ -281,6 +281,17 @@ def save_pikpak_tokens(tokens):
     except Exception as e:
         print(f"PIKPAK [{SERVER_ID}]: Failed to save tokens: {e}", flush=True)
 
+def get_captcha_for_sync(action, device_id, user_id):
+    """Helper to generate captcha token for smart_cache sync"""
+    captcha_sign, timestamp = generate_captcha_sign(device_id)
+    return get_pikpak_captcha(
+        action=action,
+        device_id=device_id,
+        user_id=user_id,
+        captcha_sign=captcha_sign,
+        timestamp=timestamp
+    )
+
 def get_account_tokens(account_id):
     """Get tokens for specific account"""
     tokens = load_pikpak_tokens()
@@ -1379,7 +1390,11 @@ def admin_clear_trash(account_id):
             log_activity("info", "Trash cleared, starting cache sync.")
             sync_thread = threading.Thread(
                 target=sync_all_accounts_to_cache,
-                kwargs={'login_func': pikpak_login, 'get_account_func': None}
+                kwargs={
+                    'login_func': pikpak_login, 
+                    'get_account_func': None,
+                    'captcha_func': get_captcha_for_sync
+                }
             )
             sync_thread.start()
         except Exception as sync_e:
@@ -1653,7 +1668,11 @@ def admin_sync_cache():
         # This can be a long-running process, so maybe run in a thread
         sync_thread = threading.Thread(
             target=sync_all_accounts_to_cache,
-            kwargs={'login_func': pikpak_login, 'get_account_func': None}
+            kwargs={
+                'login_func': pikpak_login, 
+                'get_account_func': None,
+                'captcha_func': get_captcha_for_sync
+            }
         )
         sync_thread.start()
         log_activity("info", "Started full cache sync.")
