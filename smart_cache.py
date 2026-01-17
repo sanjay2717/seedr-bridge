@@ -5,6 +5,7 @@ Checks database before downloading to avoid duplicate downloads.
 
 import re
 import time
+import random
 import requests
 from typing import Optional, Dict, List, Callable
 from supabase_client import db
@@ -376,7 +377,7 @@ def sync_account_to_cache(
                     stats['errors'] += 1
                 
                 # Rate limiting (avoid API throttling)
-                time.sleep(0.3)
+                time.sleep(random.uniform(1.0, 2.0))
                 
             except Exception as e:
                 print(f"      ❌ Error processing {file_name[:30]}: {e}")
@@ -476,7 +477,9 @@ def sync_all_accounts_to_cache(login_func: Callable, get_account_func: Callable 
                 total_stats['accounts'] += 1
                 
                 # Rate limiting between accounts
-                time.sleep(2)
+                wait_time = random.randint(5, 10)
+                print(f"   ⏳ Waiting {wait_time}s before next account...")
+                time.sleep(wait_time)
                 
             except Exception as e:
                 print(f"   ❌ Error with account {account_id}: {e}")
