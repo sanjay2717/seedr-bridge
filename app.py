@@ -2051,17 +2051,45 @@ def add_magnet():
         # Smart Cache Check
         cached_file = check_smart_cache(magnet)
         if cached_file:
-            print(f"CACHE [{SERVER_ID}]: ✅ Hit for magnet. Returning cached file.", flush=True)
-            log_activity("success", f"Cache Hit: {cached_file['file_name']}")
-            return jsonify({
-                "result": True,
-                "file_name": cached_file['file_name'],
-                "file_size": cached_file['file_size'],
-                "url": cached_file['direct_link'],
-                "account_used": cached_file['pikpak_account_id'],
-                "server": SERVER_ID,
-                "cached": True
-            })
+            print(f"CACHE [{SERVER_ID}]: ✅ Hit for magnet. Generating fresh link.", flush=True)
+            log_activity("success", f"Cache Hit: {cached_file.get('file_name', 'Unknown')}")
+            try:
+                # 1. Get account details from DB
+                account_id = cached_file['account_id']
+                
+                # Fetch account details directly from Supabase
+                acc_response = db.client.table('accounts').select('*').eq('id', account_id).limit(1).execute()
+                account = acc_response.data[0] if (acc_response.data and len(acc_response.data) > 0) else None
+                
+                if not account:
+                    raise Exception(f"Account {account_id} for cached file not found in DB.")
+
+                # Map device_id for compatibility, which is needed for login
+                account['device_id'] = account.get('current_device_id')
+                if not account['device_id']:
+                     raise Exception(f"Account {account_id} has no device_id.")
+
+                # 2. Login to the account to get fresh tokens
+                tokens = ensure_logged_in(account)
+
+                # 3. Generate a fresh download link
+                pikpak_file_id = cached_file['file_id']
+                download_url = pikpak_get_download_link(pikpak_file_id, account, tokens)
+
+                return jsonify({
+                    "result": True,
+                    "file_name": cached_file.get('file_name', 'Unknown'),
+                    "file_size": cached_file.get('file_size', 0),
+                    "url": download_url,
+                    "account_used": cached_file['account_id'],
+                    "server": SERVER_ID,
+                    "cached": True
+                })
+            except Exception as e:
+                print(f"CACHE [{SERVER_ID}]: ❌ Failed to process cache hit: {e}", flush=True)
+                log_activity("error", f"Cache hit processing failed: {e}")
+                # Return an error instead of falling through to a normal download
+                return jsonify({"error": f"Failed to retrieve cached file link: {str(e)}", "retry": False, "server": SERVER_ID}), 500
 
         
         exhausted_accounts = []
