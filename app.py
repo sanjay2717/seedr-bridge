@@ -367,9 +367,12 @@ def get_pikpak_captcha(action, device_id, user_id=None, captcha_sign=None, times
         print(f"PIKPAK [{SERVER_ID}]: Captcha request failed: {e}", flush=True)
         raise
 
-def pikpak_login(account):
-    """Login to PikPak account"""
-    print(f"PIKPAK [{SERVER_ID}]: Logging in account {account['id']} ({account['email']})", flush=True)
+def pikpak_login(account, retry_count=0):
+    """Login to PikPak account with device rotation retry"""
+    if retry_count >= 3:
+        raise Exception(f"Login failed for account {account['id']} after multiple device rotations.")
+
+    print(f"PIKPAK [{SERVER_ID}]: Logging in account {account['id']} ({account['email']}) | Attempt #{retry_count + 1}", flush=True)
     
     device_id = account["device_id"]
     email = account["email"]
@@ -398,7 +401,37 @@ def pikpak_login(account):
     
     response = requests.post(url, headers=headers, json=body, timeout=30)
     data = response.json()
+
+    # Check for device/captcha errors that require device rotation
+    error_code = data.get('error_code')
+    error_str = data.get('error')
     
+    DEVICE_ERROR_CODES = [4002, 1005, 'captcha_invalid', 'captcha_required', 'device_blocked']
+    
+    is_device_error = False
+    # Handle both integer and string error codes
+    if error_code is not None and error_code in DEVICE_ERROR_CODES:
+        is_device_error = True
+    elif error_str is not None and error_str in DEVICE_ERROR_CODES:
+        is_device_error = True
+
+    if is_device_error:
+        print(f"PIKPAK [{SERVER_ID}]: ⚠️ Device flagged for account {account['id']} (error: {error_code or error_str}). Rotating device...", flush=True)
+        log_activity("warning", f"Device flagged for Acct {account['id']}. Rotating.")
+        
+        try:
+            new_device_id = db.rotate_device(account['id'])
+            if not new_device_id:
+                raise Exception("db.rotate_device did not return a new device ID.")
+            
+            # Update account object and retry
+            account['device_id'] = new_device_id
+            return pikpak_login(account, retry_count=retry_count + 1)
+        except Exception as e:
+            final_error_msg = f"Device rotation failed for account {account['id']}: {e}"
+            print(f"PIKPAK [{SERVER_ID}]: ❌ {final_error_msg}", flush=True)
+            raise Exception(final_error_msg)
+
     if "access_token" in data:
         token_data = {
             "access_token": data["access_token"],
@@ -413,7 +446,7 @@ def pikpak_login(account):
         return token_data
     else:
         print(f"PIKPAK [{SERVER_ID}]: ❌ Login failed: {data}", flush=True)
-        raise Exception(f"Login failed: {data.get('error', 'Unknown')}")
+        raise Exception(f"Login failed: {data.get('error_description') or data.get('error', 'Unknown')}")
 
 def refresh_pikpak_token(account):
     """Refresh expired access_token"""
