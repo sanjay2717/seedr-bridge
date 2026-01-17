@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 # Load environment variables
 load_dotenv()
@@ -285,6 +285,208 @@ class SupabaseDB:
         except Exception as e:
             print(f"❌ DB Error (get_gofile_by_file_id): {e}")
             return None
+
+    # ============================================
+    # SMART CACHE METHODS (PikPak Deduplication)
+    # ============================================
+
+    def check_smart_cache(self, magnet_hash: str) -> Optional[Dict]:
+        """
+        Check if file exists in any account's cache.
+        
+        Args:
+            magnet_hash: The info_hash extracted from magnet link
+            
+        Returns:
+            Dict with account_id, file_id, file_name if found, else None
+        """
+        try:
+            response = self.client.table('pikpak_files')\
+                .select('*')\
+                .eq('magnet_hash', magnet_hash)\
+                .eq('is_trash', False)\
+                .limit(1)\
+                .execute()
+            
+            if response.data and len(response.data) > 0:
+                print(f"✅ Smart Cache HIT: {response.data[0].get('file_name', 'Unknown')}")
+                return response.data[0]
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ DB Error (check_smart_cache): {e}")
+            return None
+
+    def save_to_smart_cache(self, data: Dict) -> Optional[Dict]:
+        """
+        Save file to smart cache after successful download.
+        Uses UPSERT to handle duplicates gracefully.
+        
+        Required in data: magnet_hash, file_id, account_id
+        Optional: file_hash, file_name, file_size, parent_id
+        """
+        try:
+            record = {
+                'magnet_hash': data['magnet_hash'],
+                'file_id': data['file_id'],
+                'account_id': data['account_id'],
+                'file_hash': data.get('file_hash'),
+                'file_name': data.get('file_name'),
+                'file_size': data.get('file_size'),
+                'parent_id': data.get('parent_id'),
+                'is_trash': False,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+            
+            response = self.client.table('pikpak_files')\
+                .upsert(record, on_conflict='magnet_hash,account_id,file_id')\
+                .execute()
+            
+            print(f"💾 Smart Cache saved: {data.get('file_name', data['file_id'])}")
+            return response.data[0] if response.data else None
+            
+        except Exception as e:
+            print(f"❌ DB Error (save_to_smart_cache): {e}")
+            return None
+
+    def mark_cache_as_trash(self, account_id: int, file_ids: List[str]) -> bool:
+        """
+        Mark files as trashed (soft delete) in smart cache.
+        Called when files are deleted from PikPak.
+        
+        Args:
+            account_id: The account that had these files
+            file_ids: List of PikPak file IDs to mark as trash
+        """
+        if not file_ids:
+            return True
+            
+        try:
+            self.client.table('pikpak_files')\
+                .update({
+                    'is_trash': True,
+                    'updated_at': datetime.now(timezone.utc).isoformat()
+                })\
+                .eq('account_id', account_id)\
+                .in_('file_id', file_ids)\
+                .execute()
+            
+            print(f"🗑️ Smart Cache: Marked {len(file_ids)} files as trash for Account {account_id}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ DB Error (mark_cache_as_trash): {e}")
+            return False
+
+    def get_cached_files_by_account(self, account_id: int) -> List[str]:
+        """
+        Get all cached file_ids for an account.
+        Used during sync to detect deleted files.
+        
+        Args:
+            account_id: The account to query
+            
+        Returns:
+            List of file_id strings
+        """
+        try:
+            response = self.client.table('pikpak_files')\
+                .select('file_id')\
+                .eq('account_id', account_id)\
+                .eq('is_trash', False)\
+                .execute()
+            
+            return [row['file_id'] for row in (response.data or [])]
+            
+        except Exception as e:
+            print(f"❌ DB Error (get_cached_files_by_account): {e}")
+            return []
+
+    def bulk_upsert_cache(self, files: List[Dict]) -> bool:
+        """
+        Bulk upsert multiple files at once.
+        More efficient for sync operations.
+        
+        Args:
+            files: List of dicts with magnet_hash, file_id, account_id, etc.
+        """
+        if not files:
+            return True
+            
+        try:
+            # Add timestamp to all records
+            for f in files:
+                f['updated_at'] = datetime.now(timezone.utc).isoformat()
+                if 'is_trash' not in f:
+                    f['is_trash'] = False
+            
+            self.client.table('pikpak_files')\
+                .upsert(files, on_conflict='magnet_hash,account_id,file_id')\
+                .execute()
+            
+            print(f"💾 Smart Cache: Bulk upserted {len(files)} files")
+            return True
+            
+        except Exception as e:
+            print(f"❌ DB Error (bulk_upsert_cache): {e}")
+            return False
+
+    def get_smart_cache_stats(self) -> Dict:
+        """
+        Get statistics about the smart cache.
+        Useful for admin dashboard.
+        """
+        try:
+            # Total cached files
+            total = self.client.table('pikpak_files')\
+                .select('id', count='exact')\
+                .eq('is_trash', False)\
+                .execute()
+            
+            # Trashed files
+            trashed = self.client.table('pikpak_files')\
+                .select('id', count='exact')\
+                .eq('is_trash', True)\
+                .execute()
+            
+            return {
+                'active_files': total.count or 0,
+                'trashed_files': trashed.count or 0,
+                'total_files': (total.count or 0) + (trashed.count or 0)
+            }
+            
+        except Exception as e:
+            print(f"❌ DB Error (get_smart_cache_stats): {e}")
+            return {'active_files': 0, 'trashed_files': 0, 'total_files': 0}
+
+    def clear_trash_from_cache(self, account_id: int = None) -> int:
+        """
+        Permanently delete trashed entries from cache.
+        
+        Args:
+            account_id: Optional - only clear for specific account
+            
+        Returns:
+            Number of records deleted
+        """
+        try:
+            query = self.client.table('pikpak_files')\
+                .delete()\
+                .eq('is_trash', True)
+            
+            if account_id:
+                query = query.eq('account_id', account_id)
+            
+            response = query.execute()
+            count = len(response.data) if response.data else 0
+            
+            print(f"🧹 Smart Cache: Permanently deleted {count} trashed entries")
+            return count
+            
+        except Exception as e:
+            print(f"❌ DB Error (clear_trash_from_cache): {e}")
+            return 0
 
 # Singleton instance
 db = SupabaseDB()
