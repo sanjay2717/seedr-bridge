@@ -1377,7 +1377,10 @@ def admin_clear_trash(account_id):
         # Sync cache after clearing trash
         try:
             log_activity("info", "Trash cleared, starting cache sync.")
-            sync_thread = threading.Thread(target=sync_all_accounts_to_cache, kwargs={'login_func': pikpak_login})
+            sync_thread = threading.Thread(
+                target=sync_all_accounts_to_cache,
+                kwargs={'login_func': pikpak_login, 'get_account_func': None}
+            )
             sync_thread.start()
         except Exception as sync_e:
             print(f"CACHE [{SERVER_ID}]: Failed to start sync after trash clear: {sync_e}", flush=True)
@@ -1648,7 +1651,10 @@ def admin_sync_cache():
     """Sync all PikPak accounts to the smart cache"""
     try:
         # This can be a long-running process, so maybe run in a thread
-        sync_thread = threading.Thread(target=sync_all_accounts_to_cache, kwargs={'login_func': pikpak_login})
+        sync_thread = threading.Thread(
+            target=sync_all_accounts_to_cache,
+            kwargs={'login_func': pikpak_login, 'get_account_func': None}
+        )
         sync_thread.start()
         log_activity("info", "Started full cache sync.")
         return jsonify({"success": True, "message": "Cache sync started in background."})
