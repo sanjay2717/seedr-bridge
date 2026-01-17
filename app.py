@@ -1481,24 +1481,22 @@ def _get_gofile_stats():
             }
 
         total_files = len(uploads)
-        total_size_bytes = sum(u.get('size', 0) for u in uploads)
+        total_size_bytes = sum(u.get('file_size', 0) or 0 for u in uploads)
         total_size_gb = round(total_size_bytes / (1024**3), 2)
 
         last_keep_alive = "Never"
         if uploads:
             # Filter out None values before finding the max
-            keep_alive_dates = [u.get('last_kept_alive') for u in uploads if u.get('last_kept_alive')]
+            keep_alive_dates = [u.get('last_keep_alive') for u in uploads if u.get('last_keep_alive')]
             if keep_alive_dates:
-                last_keep_alive_ts = max(keep_alive_dates)
-                # Format it nicely
-                last_keep_alive = datetime.fromisoformat(last_keep_alive_ts).strftime('%Y-%m-%d %H:%M:%S')
+                last_keep_alive = max(keep_alive_dates)
 
         # Get last 5 active uploads, sorted by creation time
         recent_uploads = sorted(uploads, key=lambda u: u.get('created_at'), reverse=True)[:5]
         recent_uploads_list = [
             {
                 "filename": u.get('filename', 'N/A'),
-                "size": f"{round(u.get('size', 0) / (1024**2), 1)} MB",
+                "size": f"{round((u.get('file_size', 0) or 0) / (1024**2), 1)} MB",
                 "link": u.get('url', '#')
             }
             for u in recent_uploads

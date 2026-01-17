@@ -203,6 +203,32 @@
             refreshData();
         });
 
+        // Time ago utility
+        function timeAgo(isoString) {
+            if (!isoString || isoString === 'Never' || isoString === 'Error') {
+                return isoString;
+            }
+            try {
+                const date = new Date(isoString);
+                const now = new Date();
+                const seconds = Math.round((now - date) / 1000);
+                const minutes = Math.round(seconds / 60);
+                const hours = Math.round(minutes / 60);
+                const days = Math.round(hours / 24);
+
+                if (seconds < 5) return 'just now';
+                if (seconds < 60) return `${seconds} sec ago`;
+                if (minutes < 60) return `${minutes} min ago`;
+                if (hours < 24) return `${hours} hr ago`;
+                if (days === 1) return 'yesterday';
+                if (days < 7) return `${days} days ago`;
+                
+                return date.toLocaleDateString();
+            } catch (e) {
+                return isoString; // Fallback for invalid date
+            }
+        }
+
         // Refresh all data
         async function refreshData() {
             try {
@@ -338,7 +364,7 @@
             if (data.gofile) {
                 document.getElementById('gofileTotalFiles').textContent = data.gofile.total_files || 0;
                 document.getElementById('gofileTotalSize').textContent = `${data.gofile.total_size_gb || 0} GB`;
-                document.getElementById('gofileLastKeepAlive').textContent = data.gofile.last_keep_alive || 'Never';
+                document.getElementById('gofileLastKeepAlive').textContent = timeAgo(data.gofile.last_keep_alive);
 
                 const gofileUploadsTable = document.getElementById('gofileUploadsTable');
                 gofileUploadsTable.innerHTML = '';
