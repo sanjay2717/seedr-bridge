@@ -123,6 +123,31 @@
             </div>
         </section>
 
+        <!-- Smart Cache Section -->
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">🧠 Smart Cache</h2>
+                <button class="btn btn-primary" onclick="syncSmartCache()" id="syncCacheBtn">🔄 Sync Smart Cache</button>
+            </div>
+            <div class="cards">
+                <div class="card">
+                    <div class="card-icon">🗂️</div>
+                    <div class="card-value" id="cacheTotalFiles">0</div>
+                    <div class="card-label">Total Cached Files</div>
+                </div>
+                <div class="card">
+                    <div class="card-icon">💾</div>
+                    <div class="card-value" id="cacheTotalSize">0 GB</div>
+                    <div class="card-label">Total Size Cached</div>
+                </div>
+                <div class="card">
+                    <div class="card-icon">⏱️</div>
+                    <div class="card-value" id="cacheLastSync">Never</div>
+                    <div class="card-label">Last Sync Time</div>
+                </div>
+            </div>
+        </section>
+
         <!-- Test Magnet Section -->
         <section class="section">
             <h2 class="section-title">🧪 Test Magnet</h2>
@@ -201,6 +226,7 @@
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             refreshData();
+            fetchCacheStats();
         });
 
         // Time ago utility
@@ -235,6 +261,7 @@
                 const response = await fetch('/admin/api/status');
                 const data = await response.json();
                 updateDashboard(data);
+                fetchCacheStats(); // Also refresh cache stats
                 document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
             } catch (error) {
                 console.error('Failed to fetch data:', error);
@@ -381,6 +408,66 @@
                 } else {
                     gofileUploadsTable.innerHTML = '<tr><td colspan="3" class="empty-state">No recent Gofile uploads</td></tr>';
                 }
+            }
+        }
+
+        // Format bytes
+        function formatBytes(bytes, decimals = 2) {
+            if (!bytes || bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        // Fetch Cache Stats
+        async function fetchCacheStats() {
+            try {
+                const response = await fetch('/admin/api/cache-stats');
+                const data = await response.json();
+                
+                if (data) {
+                    document.getElementById('cacheTotalFiles').textContent = (data.total_files || 0).toLocaleString();
+                    document.getElementById('cacheTotalSize').textContent = formatBytes(data.total_size_bytes || 0);
+                    document.getElementById('cacheLastSync').textContent = timeAgo(data.last_sync_time);
+                }
+
+            } catch (error) {
+                console.error('Failed to fetch cache stats:', error);
+                document.getElementById('cacheTotalFiles').textContent = 'Error';
+            }
+        }
+
+        // Sync Smart Cache
+        async function syncSmartCache() {
+            const btn = document.getElementById('syncCacheBtn');
+            const originalText = btn.innerHTML;
+            
+            if (!confirm('Are you sure you want to run a full cache sync? This can take a while.')) return;
+            
+            try {
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Syncing...';
+                
+                const response = await fetch('/admin/api/sync-cache', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('✅ Cache sync started in background. Stats will update shortly.');
+                    // Refresh stats after a short delay to allow the sync to start
+                    setTimeout(fetchCacheStats, 5000);
+                } else {
+                    alert(`❌ Failed to start sync: ${data.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`❌ Request failed: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
             }
         }
 
