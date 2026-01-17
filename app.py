@@ -8,6 +8,8 @@ import time
 import re
 import json
 import hashlib
+import time
+import random
 from datetime import datetime, timedelta
 from io import IOBase
 from urllib.parse import unquote
@@ -2312,9 +2314,11 @@ def gofile_status_list():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+
 @app.route('/gofile/keep-alive', methods=['POST'])
 def gofile_keep_alive():
-    """Scheduled job to keep Gofile links alive."""
+    """Scheduled job to keep Gofile links alive with throttling."""
     print("GOFILE: Starting keep-alive job...", flush=True)
     
     files = []
@@ -2333,6 +2337,8 @@ def gofile_keep_alive():
                 "message": "No active files to keep alive."
             }
 
+        print(f"GOFILE: Found {len(files)} files to process", flush=True)
+
         proxy_url = "https://bangerman111-myfiles.hf.space/check-file"
         api_key = "mufiles-321"
         headers = {
@@ -2340,7 +2346,7 @@ def gofile_keep_alive():
             "X-API-Key": api_key
         }
 
-        for file in files:
+        for index, file in enumerate(files):
             file_id = file.get('file_id')
             folder_code = file.get('folder_code')
             server = file.get('server')
@@ -2350,6 +2356,8 @@ def gofile_keep_alive():
                 print(f"GOFILE: Skipping file with missing file_id or folder_code. DB Record ID: {file.get('id')}", flush=True)
                 failed_count += 1
                 continue
+
+            print(f"GOFILE: [{index + 1}/{len(files)}] Processing file_id={file_id}", flush=True)
 
             payload = {
                 "file_id": file_id,
@@ -2368,33 +2376,41 @@ def gofile_keep_alive():
                 if status == 'alive':
                     db.update_gofile_keep_alive(file_id)
                     success_count += 1
-                    print(f"GOFILE: Successfully kept alive: {file_id}", flush=True)
+                    print(f"GOFILE: ✅ Successfully kept alive: {file_id}", flush=True)
                 
                 elif status == 'missing':
-                    print(f"GOFILE: File missing, marking as expired: {file_id}", flush=True)
+                    print(f"GOFILE: ❌ File missing, marking as expired: {file_id}", flush=True)
                     db.expire_gofile_upload(file_id, "File missing from Gofile folder.")
                     failed_count += 1
 
                 elif status == 'error':
                     error_message = status_data.get('message', 'No message provided.')
-                    print(f"GOFILE: Proxy error for {file_id}: {error_message}", flush=True)
+                    print(f"GOFILE: ⚠️ Proxy error for {file_id}: {error_message}", flush=True)
                     failed_count += 1
                 
                 else:
-                    print(f"GOFILE: Unknown status '{status}' for {file_id}", flush=True)
+                    print(f"GOFILE: ❓ Unknown status '{status}' for {file_id}", flush=True)
                     failed_count += 1
 
             except requests.exceptions.Timeout:
-                print(f"GOFILE: Timeout checking status for {file_id}", flush=True)
+                print(f"GOFILE: ⏱️ Timeout checking status for {file_id}", flush=True)
                 failed_count += 1
             except requests.exceptions.RequestException as e:
-                print(f"GOFILE: Request failed for {file_id}: {e}", flush=True)
+                print(f"GOFILE: 🔴 Request failed for {file_id}: {e}", flush=True)
                 failed_count += 1
             except json.JSONDecodeError:
-                print(f"GOFILE: Failed to decode JSON response for {file_id}", flush=True)
+                print(f"GOFILE: 🔴 Failed to decode JSON response for {file_id}", flush=True)
                 failed_count += 1
+            
+            # ============================================================
+            # THROTTLING: Add delay between requests (except after last file)
+            # ============================================================
+            if index < len(files) - 1:
+                delay = random.randint(3, 7)
+                print(f"GOFILE: 💤 Waiting {delay}s before next request...", flush=True)
+                time.sleep(delay)
         
-        print(f"GOFILE: Keep-alive job finished. Success: {success_count}, Failed: {failed_count}", flush=True)
+        print(f"GOFILE: ✅ Keep-alive job finished. Success: {success_count}, Failed: {failed_count}", flush=True)
         
         return {
             "success": True,
@@ -2404,7 +2420,7 @@ def gofile_keep_alive():
         }
 
     except Exception as e:
-        print(f"GOFILE: An unexpected error occurred in keep-alive job: {e}", flush=True)
+        print(f"GOFILE: 🔴 An unexpected error occurred in keep-alive job: {e}", flush=True)
         return {
             "success": False, 
             "error": str(e),
@@ -2412,7 +2428,7 @@ def gofile_keep_alive():
             "kept_alive": success_count,
             "failed": failed_count
         }
-
+    
 if __name__ == '__main__':
     print("=" * 60, flush=True)
     print(f"🚀 PikPak-Telegram Bridge - SERVER: {SERVER_ID.upper()}", flush=True)
